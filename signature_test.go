@@ -25,7 +25,7 @@ func TestSignMessage_RSAVectors_ByteLevel(t *testing.T) {
 				tc.wantSig = sig.ExpectedSigB64u
 			}
 		}
-		priv := &signKey{}
+		priv := &privKey{}
 		var err error
 		if priv.rsa, err = parseRSAPrivateKey(tc.privKey); err != nil {
 			t.Fatalf("%s 私钥: %v", tc.suiteID, err)
@@ -41,7 +41,7 @@ func TestSignMessage_RSAVectors_ByteLevel(t *testing.T) {
 			t.Errorf("%s b64u 长度 = %d, want %d", tc.suiteID, len(sig), tc.wantB64uLen)
 		}
 
-		pub := &verifyKey{}
+		pub := &pubKey{}
 		if pub.rsa, err = parseRSAPublicKey(publicOf(t, v, tc.suiteID)); err != nil {
 			t.Fatalf("%s 公钥: %v", tc.suiteID, err)
 		}
@@ -54,8 +54,8 @@ func TestSignMessage_RSAVectors_ByteLevel(t *testing.T) {
 func TestSignVerifyMessage_SM2Roundtrip(t *testing.T) {
 	v := loadGoldenVectors(t)
 	suite := mustSuite(t, "WOP-SM2-SM3")
-	priv := &signKey{sm2: mustSM2Priv(t, v.Keys.SM2.PrivateDB64)}
-	pub := &verifyKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
+	priv := &privKey{sm2: mustSM2Priv(t, v.Keys.SM2.PrivateDB64)}
+	pub := &pubKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
 	msg := []byte("canonical\nPOST\n/p\n\nx-wop-nonce:n1")
 
 	sig, err := signMessage(suite, priv, msg)
@@ -77,7 +77,7 @@ func TestSignVerifyMessage_SM2Roundtrip(t *testing.T) {
 func TestVerifyMessage_LengthPrecheck(t *testing.T) {
 	v := loadGoldenVectors(t)
 	sm2Suite := mustSuite(t, "WOP-SM2-SM3")
-	pub := &verifyKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
+	pub := &pubKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
 	msg := []byte(v.Inputs.Message)
 	good := mustFirstSig(t, v, "sm2-sign-fixedk")
 
@@ -100,7 +100,7 @@ func TestVerifyMessage_LengthPrecheck(t *testing.T) {
 	}
 
 	rsaSuite := mustSuite(t, "WOP-RSA3072-SHA256")
-	rsaPub := &verifyKey{}
+	rsaPub := &pubKey{}
 	var err error
 	if rsaPub.rsa, err = parseRSAPublicKey(v.Keys.RSA3072.PublicSpkiB64); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestVerifyMessage_LengthPrecheck(t *testing.T) {
 func TestVerifyMessage_B64PaddingRejected(t *testing.T) {
 	v := loadGoldenVectors(t)
 	suite := mustSuite(t, "WOP-SM2-SM3")
-	pub := &verifyKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
+	pub := &pubKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
 	err := verifyMessage(suite, pub, []byte(v.Inputs.Message), "Si7Uw5eZm0Kii3BuIRLXwMGGOxkwFria8ypcVYXnReV376EVgV0TOkQfm21NUnJZNGM-fV0d0fMF23B0Bm3TFw=")
 	if err == nil {
 		t.Fatal("带 = 的签名应拒绝")
@@ -138,7 +138,7 @@ func TestVerifyMessage_Fuzzy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = verifyMessage(suite, &verifyKey{sm2: &otherPriv.PublicKey}, msg, sig)
+	err = verifyMessage(suite, &pubKey{sm2: &otherPriv.PublicKey}, msg, sig)
 	if err == nil {
 		t.Fatal("不配对公钥应验签失败")
 	}

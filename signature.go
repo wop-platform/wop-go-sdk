@@ -15,20 +15,20 @@ import (
 // sm2DefaultUserID SM2 签名默认用户标识（协议向量钉死）。
 var sm2DefaultUserID = []byte("1234567812345678")
 
-// signKey 商户侧签名密钥（按套件族二选一填充）。
-type signKey struct {
+// privKey 商户侧签名密钥（按套件族二选一填充）。
+type privKey struct {
 	rsa *rsa.PrivateKey
 	sm2 *ecdsa.PrivateKey
 }
 
-// verifyKey 验签方公钥（按套件族二选一填充）。
-type verifyKey struct {
+// pubKey 验签方公钥（按套件族二选一填充）。
+type pubKey struct {
 	rsa *rsa.PublicKey
 	sm2 *ecdsa.PublicKey
 }
 
 // signMessage 对 msg 加签，返回 base64url 无填充签名。
-func signMessage(s Suite, key *signKey, msg []byte) (string, error) {
+func signMessage(s Suite, key *privKey, msg []byte) (string, error) {
 	switch {
 	case s.IsSM2():
 		if key.sm2 == nil {
@@ -54,7 +54,7 @@ func signMessage(s Suite, key *signKey, msg []byte) (string, error) {
 
 // verifyMessage 验签：b64url 严格解码 → 定长前置校验（F7）→ 族路由验签。
 // 失败一律模糊（I7：CodeVerifyFailed + 固定文案）；格式/长度类为协议明确错误。
-func verifyMessage(s Suite, key *verifyKey, msg []byte, sigB64u string) error {
+func verifyMessage(s Suite, key *pubKey, msg []byte, sigB64u string) error {
 	sig, err := DecodeB64URL(sigB64u)
 	if err != nil {
 		return err
