@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: gofmt check
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: test + coverage
+        run: |
+          go test ./... -covermode=atomic -coverprofile=cover.out
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%","",$3); print $3}')
+          echo "total statement coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { if (t+0 < 98) { print "coverage " t "% < 98%"; exit 1 } }'
+      - name: dependency whitelist
+        run: |
+          deps=$(go list -deps . | grep -v '^github.com/wop-platform/wop-go-sdk' | grep '\.' | grep '/' | grep -v '^internal/' | grep -Ev '^(golang.org/x/(crypto|sys)|github.com/emmansun/gmsm)' || true)
+          if [ -n "$deps" ]; then echo "non-whitelisted deps:"; echo "$deps"; exit 1; fi
