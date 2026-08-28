@@ -102,11 +102,7 @@ func parseSM2PrivateKey(material string) (*ecdsa.PrivateKey, error) {
 	if d.Sign() == 0 || d.Cmp(n) >= 0 {
 		return nil, newError(CodeConfig, "SM2 私钥标量 d 超出 [1, n-1] 范围")
 	}
-	priv, err := sm2.NewPrivateKey(raw)
-	if err != nil {
-		return nil, newError(CodeConfig, "SM2 私钥解析失败：%v", err)
-	}
-	return &priv.PrivateKey, nil
+	return sm2PrivateKeyFromScalar(d)
 }
 
 // validateRSAKeySize 校验密钥位数与套件声明一致（WOP-RSA3072-* → 3072 位）。

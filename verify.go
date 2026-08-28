@@ -15,12 +15,12 @@ type VerifyResult struct {
 	Plaintext []byte
 }
 
-// verifyFail 构造失败结果。
+// verifyFail 构造失败结果；非 wop.Error 的内部错误按配置类收敛（防御兜底）。
 func verifyFail(err error) VerifyResult {
 	if we, ok := err.(*Error); ok {
 		return VerifyResult{OK: false, Code: we.Code, Reason: we.Message}
 	}
-	return VerifyResult{OK: false, Code: CodeProtocol, Reason: err.Error()}
+	return VerifyResult{OK: false, Code: CodeConfig, Reason: "内部错误"}
 }
 
 // VerifyResponse 校验网关响应（F6 顺序钉死）：

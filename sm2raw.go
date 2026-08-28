@@ -81,53 +81,59 @@ func randomScalar(random io.Reader) (*big.Int, error) {
 	}
 }
 
+// sm2SignRetries 随机 k 重试上限（白盒测试可注入 0 覆盖耗尽分支）。
+var sm2SignRetries = 8
+
 // sm2Sign 以私钥对 msg 签名，输出裸 r‖s 各 32B 大端（D9，线上禁 DER）。
-// k 为 nil 时由 CSPRNG 生成；非 nil 时仅限测试向量消费（fixed-k 锚点）。
+// k 为 nil 时由 CSPRNG 生成；非 nil 时仅限测试向量消费（fixed-k 锚点），
+// 且须落在 [1, n-1]。
 func sm2Sign(priv *ecdsa.PrivateKey, uid, msg []byte, k *big.Int, random io.Reader) ([]byte, error) {
 	n := sm2CurveN()
 	e := sm2E(&priv.PublicKey, uid, msg)
-	d := priv.D
-
-	for attempt := 0; attempt < 8; attempt++ {
-		var ki *big.Int
-		if k != nil {
-			if attempt > 0 {
-				return nil, errors.New("sm2: 固定 k 无有效签名（测试向量非法）")
-			}
-			ki = k
-		} else {
-			var err error
-			ki, err = randomScalar(random)
-			if err != nil {
-				return nil, err
-			}
+	if k != nil {
+		if k.Sign() <= 0 || k.Cmp(n) >= 0 {
+			return nil, errors.New("sm2: 固定 k 须落在 [1, n-1]")
 		}
-		x1, _ := sm2Curve().ScalarBaseMult(pad32(ki))
-		r := new(big.Int).Add(e, x1)
-		r.Mod(r, n)
-		if r.Sign() == 0 {
-			continue
+		if sig, ok := sm2SignTry(e, priv.D, k, n); ok {
+			return sig, nil
 		}
-		rk := new(big.Int).Add(r, ki)
-		if rk.Cmp(n) == 0 {
-			continue
+		return nil, errors.New("sm2: 固定 k 无有效签名（测试向量非法）")
+	}
+	for i := 0; i < sm2SignRetries; i++ {
+		ki, err := randomScalar(random)
+		if err != nil {
+			return nil, err
 		}
-		// s = (1+d)^-1 · (k − r·d) mod n
-		oneMinusDInv := new(big.Int).Add(big.NewInt(1), d)
-		oneMinusDInv.ModInverse(oneMinusDInv, n)
-		rd := new(big.Int).Mul(r, d)
-		s := new(big.Int).Sub(ki, rd)
-		s.Mul(s, oneMinusDInv)
-		s.Mod(s, n)
-		if s.Sign() == 0 {
-			continue
+		if sig, ok := sm2SignTry(e, priv.D, ki, n); ok {
+			return sig, nil
 		}
-		sig := make([]byte, 64)
-		r.FillBytes(sig[:32])
-		s.FillBytes(sig[32:])
-		return sig, nil
 	}
 	return nil, errors.New("sm2: 多次重试后仍未获得有效签名")
+}
+
+// sm2SignTry 单次签名计算；r、s 任一无效（GB/T 32918.2 要求重试的条件）
+// 返回 ok=false。
+func sm2SignTry(e, d, k, n *big.Int) ([]byte, bool) {
+	x1, _ := sm2Curve().ScalarBaseMult(pad32(k))
+	r := new(big.Int).Add(e, x1)
+	r.Mod(r, n)
+	if r.Sign() == 0 || new(big.Int).Add(r, k).Cmp(n) == 0 {
+		return nil, false
+	}
+	// s = (1+d)^-1 · (k − r·d) mod n
+	oneMinusDInv := new(big.Int).Add(big.NewInt(1), d)
+	oneMinusDInv.ModInverse(oneMinusDInv, n)
+	rd := new(big.Int).Mul(r, d)
+	s := new(big.Int).Sub(k, rd)
+	s.Mul(s, oneMinusDInv)
+	s.Mod(s, n)
+	if s.Sign() == 0 {
+		return nil, false
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return sig, true
 }
 
 // sm2Verify 验证裸 r‖s 64B 签名（GB/T 32918.2 验签等式）。
@@ -178,58 +184,67 @@ func sm2KDF(z []byte, klen int) []byte {
 	return out[:klen]
 }
 
+// sm2EncryptRetries 随机 k 重试上限（白盒测试可注入 0 覆盖耗尽分支）。
+var sm2EncryptRetries = 8
+
 // sm2Encrypt 公钥加密，输出 C1C3C2 裸拼接（新国标，D9）：
 // C1 = 未压缩点 65B，C3 = SM3(x2‖M‖y2) 32B，C2 = M ⊕ KDF(x2‖y2)。
-// k 为 nil 时 CSPRNG 生成；非 nil 仅限测试向量消费。
+// k 为 nil 时 CSPRNG 生成；非 nil 仅限测试向量消费，须落在 [1, n-1]。
 func sm2Encrypt(pub *ecdsa.PublicKey, msg []byte, k *big.Int, random io.Reader) ([]byte, error) {
-	for attempt := 0; attempt < 8; attempt++ {
-		var ki *big.Int
-		if k != nil {
-			if attempt > 0 {
-				return nil, errors.New("sm2: 固定 k 无有效密文（测试向量非法）")
-			}
-			ki = k
-		} else {
-			var err error
-			ki, err = randomScalar(random)
-			if err != nil {
-				return nil, err
-			}
+	if k != nil {
+		if k.Sign() <= 0 || k.Cmp(sm2CurveN()) >= 0 {
+			return nil, errors.New("sm2: 固定 k 须落在 [1, n-1]")
 		}
-		c1x, c1y := sm2Curve().ScalarBaseMult(pad32(ki))
-		x2, y2 := sm2Curve().ScalarMult(pub.X, pub.Y, pad32(ki))
-		z := concat32(x2, y2)
-		t := sm2KDF(z, len(msg))
-		// KDF 输出全零 → 重换 k（GB/T 32918.4 要求）
-		allZero := true
-		for _, b := range t {
-			if b != 0 {
-				allZero = false
-				break
-			}
+		if ct, ok := sm2EncryptTry(pub, msg, k); ok {
+			return ct, nil
 		}
-		if allZero && len(msg) > 0 {
-			continue
+		return nil, errors.New("sm2: 固定 k 无有效密文（测试向量非法）")
+	}
+	for i := 0; i < sm2EncryptRetries; i++ {
+		ki, err := randomScalar(random)
+		if err != nil {
+			return nil, err
 		}
-		c2 := make([]byte, len(msg))
-		for i := range msg {
-			c2[i] = msg[i] ^ t[i]
+		if ct, ok := sm2EncryptTry(pub, msg, ki); ok {
+			return ct, nil
 		}
-		h := sm3.New()
-		h.Write(pad32(x2))
-		h.Write(msg)
-		h.Write(pad32(y2))
-		c3 := h.Sum(nil)
-
-		out := make([]byte, 0, 65+32+len(msg))
-		out = append(out, 0x04)
-		out = append(out, pad32(c1x)...)
-		out = append(out, pad32(c1y)...)
-		out = append(out, c3...)
-		out = append(out, c2...)
-		return out, nil
 	}
 	return nil, errors.New("sm2: 多次重试后仍未获得有效密文")
+}
+
+// sm2EncryptTry 单次加密计算；KDF 输出全零（GB/T 32918.4 要求重换 k）返回 ok=false。
+func sm2EncryptTry(pub *ecdsa.PublicKey, msg []byte, k *big.Int) ([]byte, bool) {
+	c1x, c1y := sm2Curve().ScalarBaseMult(pad32(k))
+	x2, y2 := sm2Curve().ScalarMult(pub.X, pub.Y, pad32(k))
+	z := concat32(x2, y2)
+	t := sm2KDF(z, len(msg))
+	allZero := true
+	for _, b := range t {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero && len(msg) > 0 {
+		return nil, false
+	}
+	c2 := make([]byte, len(msg))
+	for i := range msg {
+		c2[i] = msg[i] ^ t[i]
+	}
+	h := sm3.New()
+	h.Write(pad32(x2))
+	h.Write(msg)
+	h.Write(pad32(y2))
+	c3 := h.Sum(nil)
+
+	out := make([]byte, 0, 65+32+len(msg))
+	out = append(out, 0x04)
+	out = append(out, pad32(c1x)...)
+	out = append(out, pad32(c1y)...)
+	out = append(out, c3...)
+	out = append(out, c2...)
+	return out, true
 }
 
 // sm2Decrypt 私钥解密 C1C3C2 裸拼接密文；任何失败（点非法、KDF 全零、

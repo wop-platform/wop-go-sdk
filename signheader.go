@@ -128,13 +128,9 @@ type encryptedEnvelope struct {
 }
 
 // wrapEncryptedBody 将密文包裹为 {"encrypted":"<b64url>"} 线上体。
+// b64url 字母表无需 JSON 转义，直接拼装（与 json.Marshal 输出逐字节一致）。
 func wrapEncryptedBody(cipherB64u string) []byte {
-	body, err := json.Marshal(encryptedEnvelope{Encrypted: cipherB64u})
-	if err != nil {
-		// 单字符串字段序列化不可能失败；防御性兜底
-		return []byte(`{"encrypted":""}`)
-	}
-	return body
+	return []byte(`{"encrypted":"` + cipherB64u + `"}`)
 }
 
 // extractEncryptedBody 从线上体提取 encrypted 密文字段（容忍未知字段，与网关语义一致）。
