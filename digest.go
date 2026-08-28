@@ -44,16 +44,29 @@ func ParseContentDigest(value string) (tag, hexSum string, err error) {
 	return "", "", newError(CodeProtocol, "x-wop-content-digest 缺少空格分隔") // 不可达，防御
 }
 
-// ValidateContentDigest 复核线上报文摘要：结构（D2）→ 套件族耦合（I5）→ 值比对。
-// 摘要不匹配返回完整性类明确错误（CodeDigestMismatch）。
-func ValidateContentDigest(s Suite, headerValue string, wireBody []byte) error {
-	tag, hexSum, err := ParseContentDigest(headerValue)
+// ValidateContentDigestHeader 结构 + 套件族耦合校验（D2/I5，不含值比对；
+// 与网关 ContentDigestHeader.validate 对齐，formatRules 消费口径）。
+func ValidateContentDigestHeader(s Suite, headerValue string) error {
+	tag, _, err := ParseContentDigest(headerValue)
 	if err != nil {
 		return err
 	}
 	if tag != s.DigestTag() {
 		return newError(CodeProtocol,
 			"x-wop-content-digest 标签 %q 与套件 %s 族不符（跨族拒绝）", tag, s.SecurityReq())
+	}
+	return nil
+}
+
+// ValidateContentDigest 复核线上报文摘要：结构（D2）→ 套件族耦合（I5）→ 值比对。
+// 摘要不匹配返回完整性类明确错误（CodeDigestMismatch）。
+func ValidateContentDigest(s Suite, headerValue string, wireBody []byte) error {
+	if err := ValidateContentDigestHeader(s, headerValue); err != nil {
+		return err
+	}
+	_, hexSum, err := ParseContentDigest(headerValue)
+	if err != nil {
+		return err
 	}
 	computed := LowerHex(s.Digest(wireBody))
 	if subtle.ConstantTimeCompare([]byte(computed), []byte(hexSum)) != 1 {
