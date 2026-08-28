@@ -56,7 +56,7 @@ func TestWrapUnwrapDEK_Roundtrip(t *testing.T) {
 	if rsaPriv.rsa, err = parseRSAPrivateKey(v.Keys.RSA3072.PrivatePkcs8B64); err != nil {
 		t.Fatal(err)
 	}
-	wrapped, err := wrapDEKPayload(rsaSuite, rsaPub, payload)
+	wrapped, err := wrapDEKPayload(rsaSuite, rsaPub, payload, nil)
 	if err != nil {
 		t.Fatalf("OAEP 包装: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestWrapUnwrapDEK_Roundtrip(t *testing.T) {
 	sm2Pub := &pubKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
 	sm2Priv := &privKey{sm2: mustSM2Priv(t, v.Keys.SM2.PrivateDB64)}
 	payloadSm2 := []byte(v.Inputs.DekPayloadSM2)
-	wrapped, err = wrapDEKPayload(sm2Suite, sm2Pub, payloadSm2)
+	wrapped, err = wrapDEKPayload(sm2Suite, sm2Pub, payloadSm2, nil)
 	if err != nil {
 		t.Fatalf("SM2 包装: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestUnwrapDEK_FuzzyOnFailure(t *testing.T) {
 	sm2Priv := &privKey{sm2: mustSM2Priv(t, v.Keys.SM2.PrivateDB64)}
 	// 用随机公钥包装 → 私钥不配对 → 解包失败
 	other, _ := generateSM2KeyForTest()
-	ct, err := sm2Encrypt(&other.PublicKey, []byte(v.Inputs.DekPayloadSM2), nil)
+	ct, err := sm2Encrypt(&other.PublicKey, []byte(v.Inputs.DekPayloadSM2), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

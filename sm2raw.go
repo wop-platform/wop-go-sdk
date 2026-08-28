@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"errors"
+	"io"
 	"math/big"
 
 	"github.com/emmansun/gmsm/sm2"
@@ -64,16 +65,17 @@ func sm2E(pub *ecdsa.PublicKey, uid, msg []byte) *big.Int {
 }
 
 // randomScalar 生成 [1, n-1] 随机标量（CSPRNG；I4 纪律：每次调用独立随机）。
-func randomScalar() (*big.Int, error) {
+func randomScalar(random io.Reader) (*big.Int, error) {
+	if random == nil {
+		random = rand.Reader
+	}
 	n := sm2CurveN()
-	one := big.NewInt(1)
 	for {
-		k, err := rand.Int(rand.Reader, n)
+		k, err := rand.Int(random, n)
 		if err != nil {
 			return nil, err
 		}
 		if k.Sign() > 0 {
-			_ = one
 			return k, nil
 		}
 	}
@@ -81,7 +83,7 @@ func randomScalar() (*big.Int, error) {
 
 // sm2Sign 以私钥对 msg 签名，输出裸 r‖s 各 32B 大端（D9，线上禁 DER）。
 // k 为 nil 时由 CSPRNG 生成；非 nil 时仅限测试向量消费（fixed-k 锚点）。
-func sm2Sign(priv *ecdsa.PrivateKey, uid, msg []byte, k *big.Int) ([]byte, error) {
+func sm2Sign(priv *ecdsa.PrivateKey, uid, msg []byte, k *big.Int, random io.Reader) ([]byte, error) {
 	n := sm2CurveN()
 	e := sm2E(&priv.PublicKey, uid, msg)
 	d := priv.D
@@ -95,7 +97,7 @@ func sm2Sign(priv *ecdsa.PrivateKey, uid, msg []byte, k *big.Int) ([]byte, error
 			ki = k
 		} else {
 			var err error
-			ki, err = randomScalar()
+			ki, err = randomScalar(random)
 			if err != nil {
 				return nil, err
 			}
@@ -179,7 +181,7 @@ func sm2KDF(z []byte, klen int) []byte {
 // sm2Encrypt 公钥加密，输出 C1C3C2 裸拼接（新国标，D9）：
 // C1 = 未压缩点 65B，C3 = SM3(x2‖M‖y2) 32B，C2 = M ⊕ KDF(x2‖y2)。
 // k 为 nil 时 CSPRNG 生成；非 nil 仅限测试向量消费。
-func sm2Encrypt(pub *ecdsa.PublicKey, msg []byte, k *big.Int) ([]byte, error) {
+func sm2Encrypt(pub *ecdsa.PublicKey, msg []byte, k *big.Int, random io.Reader) ([]byte, error) {
 	for attempt := 0; attempt < 8; attempt++ {
 		var ki *big.Int
 		if k != nil {
@@ -189,7 +191,7 @@ func sm2Encrypt(pub *ecdsa.PublicKey, msg []byte, k *big.Int) ([]byte, error) {
 			ki = k
 		} else {
 			var err error
-			ki, err = randomScalar()
+			ki, err = randomScalar(random)
 			if err != nil {
 				return nil, err
 			}

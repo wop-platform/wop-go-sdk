@@ -16,7 +16,7 @@ func TestSM2Sign_FixedK_Vector(t *testing.T) {
 	msg := []byte(v.Inputs.Message)
 	k := mustB64uBig(t, v.Inputs.SM2FixedKB64u)
 
-	sig, err := sm2Sign(priv, []byte(v.Inputs.SM2UserID), msg, k)
+	sig, err := sm2Sign(priv, []byte(v.Inputs.SM2UserID), msg, k, nil)
 	if err != nil {
 		t.Fatalf("sm2Sign: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestSM2Sign_RandomK_Roundtrip(t *testing.T) {
 	v := loadGoldenVectors(t)
 	priv := mustSM2Priv(t, v.Keys.SM2.PrivateDB64)
 	msg := []byte("随机 k 签名往返")
-	sig, err := sm2Sign(priv, []byte(v.Inputs.SM2UserID), msg, nil)
+	sig, err := sm2Sign(priv, []byte(v.Inputs.SM2UserID), msg, nil, nil)
 	if err != nil {
 		t.Fatalf("sm2Sign random: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSM2Sign_RandomK_Roundtrip(t *testing.T) {
 		t.Fatal("随机 k 签名应可通过验签")
 	}
 	// 两次签名不同（k 随机）
-	sig2, _ := sm2Sign(priv, []byte(v.Inputs.SM2UserID), msg, nil)
+	sig2, _ := sm2Sign(priv, []byte(v.Inputs.SM2UserID), msg, nil, nil)
 	if bytes.Equal(sig, sig2) {
 		t.Fatal("随机 k 两次签名不应相同（碰撞概率可忽略）")
 	}
@@ -104,7 +104,7 @@ func TestSM2Encrypt_FixedK_Vector(t *testing.T) {
 			want = ke.CipherB64u
 		}
 	}
-	ct, err := sm2Encrypt(pub, []byte(v.Inputs.DekPayloadSM2), k)
+	ct, err := sm2Encrypt(pub, []byte(v.Inputs.DekPayloadSM2), k, nil)
 	if err != nil {
 		t.Fatalf("sm2Encrypt: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestSM2EncryptDecrypt_RandomK_Roundtrip(t *testing.T) {
 	v := loadGoldenVectors(t)
 	priv := mustSM2Priv(t, v.Keys.SM2.PrivateDB64)
 	msg := []byte("round-trip 消息 with ASCII & 中文")
-	ct, err := sm2Encrypt(&priv.PublicKey, msg, nil)
+	ct, err := sm2Encrypt(&priv.PublicKey, msg, nil, nil)
 	if err != nil {
 		t.Fatalf("sm2Encrypt random: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestSM2EncryptDecrypt_RandomK_Roundtrip(t *testing.T) {
 		t.Fatalf("往返明文不一致")
 	}
 	// 空消息
-	ct, err = sm2Encrypt(&priv.PublicKey, nil, nil)
+	ct, err = sm2Encrypt(&priv.PublicKey, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("空消息加密: %v", err)
 	}

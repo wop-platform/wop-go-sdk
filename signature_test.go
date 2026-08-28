@@ -30,7 +30,7 @@ func TestSignMessage_RSAVectors_ByteLevel(t *testing.T) {
 		if priv.rsa, err = parseRSAPrivateKey(tc.privKey); err != nil {
 			t.Fatalf("%s 私钥: %v", tc.suiteID, err)
 		}
-		sig, err := signMessage(suite, priv, msg)
+		sig, err := signMessage(suite, priv, msg, nil)
 		if err != nil {
 			t.Fatalf("%s 签名: %v", tc.suiteID, err)
 		}
@@ -58,7 +58,7 @@ func TestSignVerifyMessage_SM2Roundtrip(t *testing.T) {
 	pub := &pubKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
 	msg := []byte("canonical\nPOST\n/p\n\nx-wop-nonce:n1")
 
-	sig, err := signMessage(suite, priv, msg)
+	sig, err := signMessage(suite, priv, msg, nil)
 	if err != nil {
 		t.Fatalf("SM2 签名: %v", err)
 	}
@@ -160,7 +160,7 @@ func publicOf(t *testing.T, v *goldenVectors, suiteID string) string {
 }
 
 func generateSM2KeyForTest() (*ecdsa.PrivateKey, error) {
-	k, err := randomScalar()
+	k, err := randomScalar(nil)
 	if err != nil {
 		return nil, err
 	}

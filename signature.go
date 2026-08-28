@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"io"
 )
 
 // F3/F7：结构化签名层。签名对象 = canonicalRequest UTF-8 字节；
@@ -28,13 +29,13 @@ type pubKey struct {
 }
 
 // signMessage 对 msg 加签，返回 base64url 无填充签名。
-func signMessage(s Suite, key *privKey, msg []byte) (string, error) {
+func signMessage(s Suite, key *privKey, msg []byte, random io.Reader) (string, error) {
 	switch {
 	case s.IsSM2():
 		if key.sm2 == nil {
 			return "", newError(CodeConfig, "SM2 套件缺少私钥")
 		}
-		sig, err := sm2Sign(key.sm2, sm2DefaultUserID, msg, nil)
+		sig, err := sm2Sign(key.sm2, sm2DefaultUserID, msg, nil, random)
 		if err != nil {
 			return "", fuzzyError(CodeVerifyFailed) // 加签失败对外模糊（密钥参与）
 		}

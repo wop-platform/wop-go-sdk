@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"io"
 	"strings"
 )
 
@@ -14,13 +15,16 @@ import (
 // 解包失败对外一律模糊（I7：CodeDecryptFailed 固定文案）。
 
 // wrapDEKPayload 用公钥包装 DEK 载荷明文，返回 base64url 无填充密文。
-func wrapDEKPayload(s Suite, pub *pubKey, payload []byte) (string, error) {
+func wrapDEKPayload(s Suite, pub *pubKey, payload []byte, random io.Reader) (string, error) {
+	if random == nil {
+		random = rand.Reader
+	}
 	switch {
 	case s.IsSM2():
 		if pub.sm2 == nil {
 			return "", newError(CodeConfig, "SM2 套件缺少 DEK 包装公钥")
 		}
-		ct, err := sm2Encrypt(pub.sm2, payload, nil)
+		ct, err := sm2Encrypt(pub.sm2, payload, nil, random)
 		if err != nil {
 			return "", fuzzyError(CodeDecryptFailed)
 		}
@@ -29,7 +33,7 @@ func wrapDEKPayload(s Suite, pub *pubKey, payload []byte) (string, error) {
 		if pub.rsa == nil {
 			return "", newError(CodeConfig, "RSA 套件缺少 DEK 包装公钥")
 		}
-		ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub.rsa, payload, nil)
+		ct, err := rsa.EncryptOAEP(sha256.New(), random, pub.rsa, payload, nil)
 		if err != nil {
 			return "", fuzzyError(CodeDecryptFailed)
 		}
