@@ -256,3 +256,22 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// Do 一站式调用：BuildRequest → Transport.Send → VerifyResponse（F6）。
+// 构建或发送失败返回错误；响应校验失败时 err 携带 wop.Error（Code 可编程处理），
+// VerifyResult 同时返回完整判定。
+func (c *Client) Do(method, path string, body []byte, level Level, opts ...RequestOption) (VerifyResult, TransportResponse, error) {
+	draft, err := c.BuildRequest(method, path, body, level, opts...)
+	if err != nil {
+		return VerifyResult{}, TransportResponse{}, err
+	}
+	resp, err := c.transport.Send(draft)
+	if err != nil {
+		return VerifyResult{}, TransportResponse{}, err
+	}
+	res := c.VerifyResponse(method, path, resp.Headers, resp.Body)
+	if !res.OK {
+		return res, resp, &Error{Code: res.Code, Message: res.Reason}
+	}
+	return res, resp, nil
+}
