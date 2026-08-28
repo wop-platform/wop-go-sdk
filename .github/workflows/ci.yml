@@ -25,5 +25,5 @@ jobs:
           awk -v t="$total" 'BEGIN { if (t+0 < 98) { print "coverage " t "% < 98%"; exit 1 } }'
       - name: dependency whitelist
         run: |
-          deps=$(go list -deps . | grep -v '^github.com/wop-platform/wop-go-sdk' | grep '\.' | grep '/' | grep -v '^internal/' | grep -Ev '^(golang.org/x/(crypto|sys)|github.com/emmansun/gmsm)' || true)
+          deps=$(go list -deps -f '{{if .Module}}{{.Module.Path}}{{end}}' . | sort -u | grep -Ev '^(github.com/wop-platform/wop-go-sdk|github.com/emmansun/gmsm|golang.org/x/crypto|golang.org/x/sys)$' | grep -v '^$' || true)
           if [ -n "$deps" ]; then echo "non-whitelisted deps:"; echo "$deps"; exit 1; fi
