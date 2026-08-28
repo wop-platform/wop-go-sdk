@@ -24,10 +24,10 @@ func TestCanonicalHeaders(t *testing.T) {
 		t.Errorf("plus handling: %q", got)
 	}
 
-	// 重复名称折叠（map 语义，与 Java TreeMap 覆盖一致）
+	// 重复名称折叠为单行（map 迭代序不定，值取其一；Java TreeMap 覆盖语义相同）
 	got = CanonicalHeaders(map[string]string{"A": "1", "a": "2"})
-	if got != "a:2" {
-		t.Errorf("case fold: %q", got)
+	if got != "a:1" && got != "a:2" {
+		t.Errorf("case fold 应折叠为单行: %q", got)
 	}
 }
 

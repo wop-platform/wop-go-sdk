@@ -291,3 +291,13 @@ func equalBytes(a, b []byte) bool {
 	}
 	return v == 0
 }
+
+// sm2PrivateKeyFromScalar 从标量构造 SM2 私钥（派生公钥 = d·G）。
+func sm2PrivateKeyFromScalar(d *big.Int) (*ecdsa.PrivateKey, error) {
+	raw := pad32(d)
+	priv, err := sm2.NewPrivateKey(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &priv.PrivateKey, nil
+}
