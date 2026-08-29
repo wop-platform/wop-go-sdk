@@ -193,10 +193,17 @@ func TestVectorConformance_DekPayload(t *testing.T) {
 	}
 }
 
+// formatRules accept 向量的字节级期望（spec:F6/D10 尾随位 canonical 钉子）：
+// AA → 1 字节 0x00；TWE → 2 字节 "Ma"（0x4D 0x61）。
+var canonicalB64URLBytes = map[string][]byte{
+	"b64url-trailing-bits-canonical-2": {0x00},
+	"b64url-trailing-bits-canonical-3": {0x4D, 0x61},
+}
+
 func TestVectorConformance_FormatRules(t *testing.T) {
 	v := loadGoldenVectors(t)
-	if len(v.FormatRules) != 8 {
-		t.Fatalf("formatRules 条数 = %d, want 8", len(v.FormatRules))
+	if len(v.FormatRules) != 12 {
+		t.Fatalf("formatRules 条数 = %d, want 12", len(v.FormatRules))
 	}
 	for _, fr := range v.FormatRules {
 		switch {
@@ -217,8 +224,23 @@ func TestVectorConformance_FormatRules(t *testing.T) {
 				t.Errorf("%s 应拒绝", fr.ID)
 			}
 		case len(fr.ID) > 6 && fr.ID[:6] == "b64url":
-			if _, err := DecodeB64URL(fr.Value); fr.Expect == "reject" && err == nil {
-				t.Errorf("%s 应拒绝", fr.ID)
+			// spec:F6/D10 reject：Strict() 拒 '='/非法字母表与尾随位非规范（aE/TWF）
+			got, err := DecodeB64URL(fr.Value)
+			if fr.Expect == "reject" {
+				if err == nil {
+					t.Errorf("%s 应拒绝", fr.ID)
+				}
+				break
+			}
+			// spec:F6/D10 accept：正向断言解码成功且字节级一致
+			want, ok := canonicalB64URLBytes[fr.ID]
+			if !ok {
+				t.Fatalf("accept 向量 %q 缺字节级期望（未预期 id 哨兵）", fr.ID)
+			}
+			if err != nil {
+				t.Errorf("%s 应接受: %v", fr.ID, err)
+			} else if !bytes.Equal(got, want) {
+				t.Errorf("%s 解码字节不符: got %x, want %x", fr.ID, got, want)
 			}
 		default:
 			t.Fatalf("未预期 formatRule %q", fr.ID)
