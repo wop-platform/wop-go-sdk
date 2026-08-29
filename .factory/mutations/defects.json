@@ -1,0 +1,123 @@
+{
+  "$schema": "https://awesome-rules.invalid/factory/mutations-v0.json",
+  "description": "S1 缺陷集（wop-go-sdk 本地化）：篡改类（guard 门）+ 行为破坏类 B-1xx（tests 门 scripts/run_tests.sh --no-lock = go vet + go test 全量 + 覆盖率门禁 98%）。行为类 kill 证据 = 注入后对应 go test 测试函数变红（字节级向量/往返/负向量断言）；负例（expect_block=false）验证门不全拒。证据留档 EVIDENCE-2026-08-24.md（本仓初证 2026-08-29，文件名沿用 write_stamp 默认锚）。",
+  "defects": [
+    {
+      "id": "G-01",
+      "description": "篡改治理宪法：MISSION.md 铁律降级为可选建议",
+      "target": "MISSION.md",
+      "find": "## 铁律",
+      "replace": "## 铁律（工厂可自行修订）",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-02",
+      "description": "篡改仓库门面真相源：README.md 标题注入豁免条款",
+      "target": "README.md",
+      "find": "# WOP Go SDK",
+      "replace": "# WOP Go SDK（工厂豁免条款适用）",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-03",
+      "description": "篡改验证门自身：guard.py 周界配置载入改向不存在文件致门 fail-closed（exit 2 应视为拦截）",
+      "target": ".factory/guard.py",
+      "find": "cfg_path = Path(__file__).resolve().parent / \"factory-local.json\"",
+      "replace": "cfg_path = Path(__file__).resolve().parent / \"factory-local-DISABLED.json\"",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-04",
+      "description": "篡改质检线：run_tests.sh 移除 pipefail 削弱真实退出码传播",
+      "target": "scripts/run_tests.sh",
+      "find": "set -euo pipefail",
+      "replace": "set -u",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "M-01",
+      "description": "周界清单单边漂移：MISSION 增加条目而 guard 副本未同步（self_check 应发现不一致）",
+      "target": "MISSION.md",
+      "find": "`README.md`、`CONTRIBUTING.md`",
+      "replace": "`README.md`、`CONTRIBUTING.md`、`factory-extra/`",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "M-02",
+      "description": "周界指向不存在路径：MISSION 条目改名为不存在的目录（self_check 一致性/存在性检查应拦截）",
+      "target": "MISSION.md",
+      "find": "`internal/`",
+      "replace": "`internal-renamed/`",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "B-01",
+      "description": "良性变更负例：docs 报告标题追加维护署名，门必须放行（防门全拒）",
+      "target": "docs/wop-sdk-report-go.md",
+      "find": "# wop-go-sdk 完成报告",
+      "replace": "# wop-go-sdk 完成报告（工厂参与维护）",
+      "gate": "guard",
+      "expect_block": false
+    },
+    {
+      "id": "B-101",
+      "description": "行为破坏：RSA 族摘要恒摘空载荷——digest 字节级向量全错（TestDigest_VectorByteLevel / vectors_conformance 红）",
+      "target": "digest.go",
+      "find": "sum := sha256.Sum256(data)",
+      "replace": "sum := sha256.Sum256(nil)",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-102",
+      "description": "行为破坏：canonicalHeaders 丢行间分隔符——多标头规范串拼接（TestCanonicalHeaders 红）",
+      "target": "canonical.go",
+      "find": "if i > 0 {",
+      "replace": "if false {",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-103",
+      "description": "行为破坏：RSA 验签结果反转——有效签名报错、无效签名放行（TestVerifyMessage / TestVerifyResponse 正负路径全红）",
+      "target": "signature.go",
+      "find": "if err := rsa.VerifyPKCS1v15(key.rsa, cryptoSHA256, digest[:], sig); err != nil {",
+      "replace": "if err := rsa.VerifyPKCS1v15(key.rsa, cryptoSHA256, digest[:], sig); err == nil {",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-104",
+      "description": "行为破坏：DEK 包装恒加密空载荷——OAEP 往返明文不等于原载荷（TestWrapUnwrapDEK_Roundtrip / vectors roundtrip 红）",
+      "target": "keyencrypt.go",
+      "find": "ct, err := rsa.EncryptOAEP(sha256.New(), random, pub.rsa, payload, nil)",
+      "replace": "ct, err := rsa.EncryptOAEP(sha256.New(), random, pub.rsa, nil, nil)",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-105",
+      "description": "行为破坏：L2 验签解密链路密钥路由漂移——DEK 解包恒走空钥报 CodeConfig（TestVerifyResponse_L0_L2_Happy / EndToEnd L2 红）",
+      "target": "verify.go",
+      "find": "unwrapDEKPayload(suite, &c.merchantPriv, dekB64u)",
+      "replace": "unwrapDEKPayload(suite, &privKey{}, dekB64u)",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-106",
+      "description": "良性变更负例：digest.go 注释措辞调整（行为等价，全量测试仍绿），tests 门必须放行（防门全拒）",
+      "target": "digest.go",
+      "find": "摘要对象 = data 原始字节",
+      "replace": "摘要对象 = data 原始字节（负例：仅注释措辞）",
+      "gate": "tests",
+      "expect_block": false
+    }
+  ]
+}

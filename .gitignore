@@ -1,3 +1,17 @@
 cover.out
 cover/
 *.test
+
+# 工厂治理层入库（MISSION/.factory 宪法/hosting(ADR-008)/状态机/prompts/guard/tests
+# 纳入 git 管理；hosting.env 为平台配置随仓共享，令牌走 shell profile 不入库。）
+# 不入库：运行时产物与机器态（参照 gtsp-wop-gateway .gitignore 排除模式）
+.factory/artifacts/
+.factory/locks/
+.factory/worktrees/
+.factory/metrics/
+.factory/var/
+.factory/.pytest_cache/
+.factory/regression/**/out/
+.factory/prompts/__pycache__/
+.factory/mutations/__pycache__/
+.factory/tests/__pycache__/
