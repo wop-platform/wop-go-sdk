@@ -1,0 +1,984 @@
+#!/usr/bin/env python3
+"""hosting.py — 托管平台抽象层（ADR-008）：核心逻辑与 GitHub/Codeup 解耦。
+
+设计（对齐 MISSION 铁律 4：零 LLM、确定性）：
+- 中立契约唯一：核心脚本/状态机只认本模块的中立 schema 与 op 集，
+  平台差异（gh CLI vs 云效 OpenAPI、reviewDecision vs reviewOpinionStatus、
+  issue vs Projex 工作项）收敛在适配器内。
+- 中立 schema v1（stdout JSON；factory-state.sh/state.py/factory_lib.py 消费）：
+    issue = {"number": int, "state": "open"|"closed", "title": str, "body": str,
+             "labels": [str], "comments": [{"author": str, "body": str}]}
+    pr    = {"number": int, "state": "open"|"closed"|"merged",
+             "review": "pending"|"approved"|"changes_requested",
+             "mergeable": bool|null, "labels": [str],
+             "title": str, "body": str, "head": str, "base": str}
+    label_history = [{"op": "add"|"remove", "label": str}]
+- 原子性：issue/pr set-labels 的 add+remove 在支持单请求换标的平台
+  （GitHub）合并为一次调用——半途断裂=双标签或裸奔（factory-lib.sh 语义）。
+- 平台选择：FACTORY_HOSTING=github（默认）|codeup。
+- 退出码：0 成功；1 平台操作失败；2 用法/配置/平台能力缺口（fail-closed，
+  绝不静默降级——降级等于状态机半转移）。
+- 层级契约：本模块是**传输层**。issue 评论/标签副作用的唯一出口是
+  factory-lib.sh 的 issue_comment()/issue_label_swap()（sanitize 与租约
+  围栏在出口统一管）；链/批次脚本不得绕过 factory-lib 直调本模块写
+  issue 副作用（tools/check_hosting_exit.py 机械化盯防）。issue/pr 的
+  **创建**与 PR 侧写不在该收口范围（S3/M2 流程无 issue 租约上下文，
+  PR 标签漂移由 factory-state.sh sync 兜底收敛）。
+
+Codeup 能力边界（ADR-008 证据，勿删）：
+- 【实测】MR 评论端点（org 级 changeRequests + comment_type/resolved 必填）
+  ——本仓 skills/alibabacloud-devops 生产沉淀。
+- 【文档推导】其余 MR 端点按 oapi/v1 org 级模式推导，未经 live 验证
+  （本仓无云效凭据环境），请求形状由 tests/test_hosting.py mock 锁定。
+- 【实测破案 PR #62】issue create 可用:create 本体必填仅 assignedTo/
+  spaceId/subject/workitemTypeId;模板层 SystemCustomField 经
+  customFieldValues 平面对象 {"fieldId":"value"} 传,fieldId 从字段配置
+  端点发现,assignedTo=24-hex 用户 id(env CODEUP_ASSIGN_USER_ID)。
+  工作项读/写面（view/list/set-labels/comment）仍未实装——链状态机
+  依赖 PR 侧标签/事件史,缺口 (b)(c) 未解。
+- 【平台缺口】(b) MR 类标无 Unlink 端点 → set-labels --remove 不可表达；
+  (c) 无标签事件时间线 → label history 不可表达。fail-closed exit 2。
+
+CLI（bash 侧调用面；py 侧 import current_adapter）：
+  hosting.py auth ok
+  hosting.py label ensure <name> <color> <desc>
+  hosting.py label history <pr>
+  hosting.py issue view <n>
+  hosting.py issue get-labels <n>
+  hosting.py issue list [--state open|all] [--label L] [--limit N] [--comments]
+  hosting.py issue set-labels <n> [--add CSV] [--remove CSV]
+  hosting.py issue comment <n> (--body S | --body-file F) [--marker M]
+  hosting.py issue create --title T (--body S | --body-file F) [--label L] [--repo R]
+  hosting.py pr view <p> [--repo R]
+  hosting.py pr list [--state open|all] [--label L] [--limit N] [--repo R]
+  hosting.py pr set-labels <p> [--add CSV] [--remove CSV]
+  hosting.py pr create --head B --title T (--body S | --body-file F)
+                       [--label L] [--base B] [--repo R]
+  hosting.py pr comment <p> (--body S | --body-file F)
+  hosting.py pr diff <p> [--name-only]
+  hosting.py pr merge <p> --method merge|squash|rebase
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+FACTORY_HOSTING = os.environ.get("FACTORY_HOSTING", "github")
+
+
+class HostingError(Exception):
+    """op 失败（exit 1）或平台能力缺口/配置错误（exit 2）。"""
+
+    def __init__(self, msg, code=1):
+        super().__init__(msg)
+        self.code = code
+
+
+# ---------------------------------------------------------------------------
+# GitHub slug 解析（自 factory_lib.py 迁入——平台选择逻辑归本层，
+# 核心脚本不再各自扫 remote）
+# ---------------------------------------------------------------------------
+
+_SLUG_RE = re.compile(
+    r"^(?:[A-Za-z0-9_.-]+@)?(?:github\.com|ssh\.github\.com)(?::\d+)?[/:]"
+    r"(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$")
+_SLUG_VALID = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+
+def extract_slug(urls):
+    """remote URL 清单 → GitHub slug。首条 github.com 者胜出（github remote
+    名优先由调用方注入顺序保证）；主机锚定防伪装（CodeQL 同源），产出再过
+    owner/repo 白名单双闸。GH_REPO 显式指定不经此函数。"""
+    for u in urls:
+        t = re.sub(r"^(?:ssh|git|https?)://", "", (u or "").strip())
+        m = _SLUG_RE.match(t)
+        if m and _SLUG_VALID.fullmatch(m.group("slug")):
+            return m.group("slug")
+    return ""
+
+
+def _git_remote_urls(repo):
+    urls = []
+    for remote in ("github", "origin"):
+        r = subprocess.run(
+            ["git", "-C", str(repo), "remote", "get-url", "--all", "--push", remote],
+            capture_output=True, text=True)
+        urls += [ln for ln in r.stdout.splitlines() if ln.strip()]
+    return urls
+
+
+def resolve_repo_slug(repo):
+    """GH_REPO 显式指定优先；否则双 remote 布局逐条扫（github remote 名优先，
+    origin push 兜底；443 端口形态兼容——双仓镜像布局实证）。"""
+    if os.environ.get("GH_REPO"):
+        return os.environ["GH_REPO"]
+    return extract_slug(_git_remote_urls(repo))
+
+
+# ---------------------------------------------------------------------------
+# GitHub 适配器
+# ---------------------------------------------------------------------------
+
+_GH_STATE = {"OPEN": "open", "CLOSED": "closed", "MERGED": "merged"}
+_GH_REVIEW = {"APPROVED": "approved", "CHANGES_REQUESTED": "changes_requested"}
+
+
+class GitHubAdapter:
+    name = "github"
+
+    def __init__(self, repo="."):
+        self.repo = repo
+        self._slug = None
+
+    def slug(self, override=None):
+        if override:
+            return override
+        if self._slug is None:
+            self._slug = resolve_repo_slug(self.repo)
+        return self._slug
+
+    def _gh(self, args, repo_override=None, stdin=None):
+        slug = self.slug(repo_override)
+        if not slug:
+            raise HostingError(
+                "无法确定 GitHub 仓库 slug（GH_REPO 或 github remote）", code=2)
+        cmd = ["gh", *args]
+        # 只对语义上指向仓库的子命令追加 --repo（auth status 等全局命令不追加）
+        if args and args[0] in ("issue", "pr", "label", "api"):
+            cmd += ["--repo", slug]
+        r = subprocess.run(cmd, capture_output=True, text=True, input=stdin)
+        return r
+
+    def _gh_json(self, args, repo_override=None):
+        r = self._gh(args, repo_override)
+        if r.returncode != 0:
+            raise HostingError(f"gh {' '.join(args)} 失败: {r.stderr.strip()[:300]}")
+        try:
+            return json.loads(r.stdout)
+        except json.JSONDecodeError:
+            raise HostingError(f"gh {' '.join(args)} 输出非 JSON（网络截断/stub）")
+
+    # -- 归一化 --
+    @staticmethod
+    def _issue(d):
+        return {"number": d.get("number"), "state": _GH_STATE.get(d.get("state"), "open"),
+                "title": d.get("title") or "", "body": d.get("body") or "",
+                "labels": [l["name"] for l in d.get("labels") or []],
+                "comments": [{"author": (c.get("author") or {}).get("login") or "",
+                              "body": c.get("body") or ""}
+                             for c in d.get("comments") or []]}
+
+    @staticmethod
+    def _pr(d):
+        return {"number": d.get("number"), "state": _GH_STATE.get(d.get("state"), "open"),
+                "review": _GH_REVIEW.get(d.get("reviewDecision"), "pending"),
+                "mergeable": (True if d.get("mergeable") == "MERGEABLE"
+                              else False if d.get("mergeable") == "CONFLICTING" else None),
+                "labels": [l["name"] for l in d.get("labels") or []],
+                "title": d.get("title") or "", "body": d.get("body") or "",
+                "head": d.get("headRefName") or "", "base": d.get("baseRefName") or ""}
+
+    # -- ops --
+    def auth_ok(self):
+        try:
+            r = subprocess.run(["gh", "auth", "status"],
+                               capture_output=True, text=True)
+        except FileNotFoundError:
+            return False  # gh CLI 不在 PATH（环境缺失，非凭据问题）
+        return r.returncode == 0
+
+    def issue_view(self, n, repo=None):
+        return self._issue(self._gh_json(
+            ["issue", "view", str(n),
+             "--json", "number,state,title,body,labels,comments"], repo))
+
+    def issue_labels(self, n, repo=None):
+        d = self._gh_json(["issue", "view", str(n), "--json", "labels"], repo)
+        return [l["name"] for l in d.get("labels") or []]
+
+    def issue_list(self, state="open", label=None, limit=100,
+                   comments=False, repo=None):
+        fields = "number,state,title,body,labels" + (",comments" if comments else "")
+        args = ["issue", "list", "--state", state, "--limit", str(limit),
+                "--json", fields]
+        if label:
+            args += ["--label", label]
+        return [self._issue(d) for d in self._gh_json(args, repo)]
+
+    def issue_set_labels(self, n, add=(), remove=(), repo=None):
+        args = ["issue", "edit", str(n)]
+        if remove:
+            args += ["--remove-label", ",".join(remove)]
+        if add:
+            args += ["--add-label", ",".join(add)]
+        if not add and not remove:
+            return True
+        r = self._gh(args, repo)
+        if r.returncode != 0:
+            raise HostingError(f"issue #{n} 标签设置失败: {r.stderr.strip()[:200]}")
+        return True
+
+    def issue_comment(self, n, body, marker=None, repo=None):
+        if marker:
+            have = self.issue_view(n, repo)["comments"]
+            if any(f"<!-- {marker} -->" in c["body"] for c in have):
+                print(f"[dedupe] 评论标记 {marker} 已存在，跳过", file=sys.stderr)
+                return True
+            body = f"{body}\n<!-- {marker} -->\n"
+        r = self._gh(["issue", "comment", str(n), "--body", body], repo)
+        if r.returncode != 0:
+            raise HostingError(f"issue #{n} 评论失败: {r.stderr.strip()[:200]}")
+        return True
+
+    def issue_create(self, title, body, label=None, repo=None):
+        args = ["issue", "create", "--title", title, "--body", body]
+        if label:
+            args += ["--label", label]
+        r = self._gh(args, repo)
+        if r.returncode != 0:
+            raise HostingError(f"issue 创建失败: {r.stderr.strip()[:200]}")
+        url = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+        m = re.search(r"/issues/(\d+)$", url)
+        return {"number": int(m.group(1)) if m else None, "url": url}
+
+    def pr_view(self, p, repo=None):
+        return self._pr(self._gh_json(
+            ["pr", "view", str(p),
+             "--json", "number,state,reviewDecision,mergeable,labels,"
+                       "title,body,headRefName,baseRefName"], repo))
+
+    def pr_list(self, state="open", label=None, limit=100, repo=None):
+        args = ["pr", "list", "--state", state, "--limit", str(limit),
+                "--json", "number,state,reviewDecision,mergeable,labels,"
+                          "title,body,headRefName,baseRefName"]
+        if label:
+            args += ["--label", label]
+        return [self._pr(d) for d in self._gh_json(args, repo)]
+
+    def pr_set_labels(self, p, add=(), remove=(), repo=None):
+        args = ["pr", "edit", str(p)]
+        if remove:
+            args += ["--remove-label", ",".join(remove)]
+        if add:
+            args += ["--add-label", ",".join(add)]
+        if not add and not remove:
+            return True
+        r = self._gh(args, repo)
+        if r.returncode != 0:
+            raise HostingError(f"pr #{p} 标签设置失败: {r.stderr.strip()[:200]}")
+        return True
+
+    def pr_create(self, head, title, body, label=None, base=None, repo=None):
+        args = ["pr", "create", "--head", head, "--title", title, "--body", body]
+        if base:
+            args += ["--base", base]
+        if label:
+            args += ["--label", label]
+        r = self._gh(args, repo)
+        if r.returncode != 0:
+            raise HostingError(f"PR 创建失败: {r.stderr.strip()[:200]}")
+        url = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+        m = re.search(r"/pull/(\d+)$", url)
+        return {"number": int(m.group(1)) if m else None, "url": url}
+
+    def pr_comment(self, p, body, repo=None):
+        r = self._gh(["pr", "comment", str(p), "--body", body], repo)
+        if r.returncode != 0:
+            raise HostingError(f"pr #{p} 评论失败: {r.stderr.strip()[:200]}")
+        return True
+
+    def pr_diff(self, p, name_only=False, repo=None):
+        args = ["pr", "diff", str(p)]
+        if name_only:
+            args += ["--name-only"]
+        r = self._gh(args, repo)
+        if r.returncode != 0:
+            raise HostingError(f"pr #{p} diff 失败: {r.stderr.strip()[:200]}")
+        return r.stdout
+
+    def pr_merge(self, p, method="merge", repo=None):
+        r = self._gh(["pr", "merge", str(p), f"--{method}", "--admin"], repo)
+        if r.returncode != 0:
+            raise HostingError(f"pr #{p} merge 失败: {r.stderr.strip()[:200]}")
+        return True
+
+    def pr_close(self, p, repo=None):
+        r = self._gh(["pr", "close", str(p)], repo)
+        if r.returncode != 0:
+            raise HostingError(f"pr #{p} close 失败: {r.stderr.strip()[:200]}")
+        return True
+
+    def label_ensure(self, name, color, desc):
+        r = self._gh(["label", "create", name, "--color", color,
+                      "--description", desc, "--force"])
+        return r.returncode == 0
+
+    def label_history(self, p):
+        slug = self.slug()
+        if not slug:
+            raise HostingError("无法确定 GitHub 仓库 slug", code=2)
+        out = subprocess.run(
+            ["gh", "api", f"repos/{slug}/issues/{p}/events", "--paginate"],
+            capture_output=True, text=True)
+        if out.returncode != 0:
+            raise HostingError(f"label history 取回失败: {out.stderr.strip()[:200]}")
+        hist = []
+        for e in json.loads(out.stdout or "[]"):
+            ev, name = e.get("event"), (e.get("label") or {}).get("name")
+            if ev == "labeled" and name:
+                hist.append({"op": "add", "label": name})
+            elif ev == "unlabeled" and name:
+                hist.append({"op": "remove", "label": name})
+        return hist
+
+
+
+# ---------------------------------------------------------------------------
+# Codeup（云效）适配器 —— oapi/v1 org 级端点（ADR-008）
+# ---------------------------------------------------------------------------
+
+_CU_STATE = {"UNDER_DEV": "open", "UNDER_REVIEW": "open", "TO_BE_MERGED": "open",
+             "CLOSED": "closed", "MERGED": "merged",
+             "opened": "open", "reopened": "open", "closed": "closed",
+             "accepted": "open", "merged": "merged", "locked": "open"}
+_CU_MERGE_METHOD = {"merge": "no-fast-forward", "squash": "squash", "rebase": "rebase"}
+
+
+def _unsupported(op, why):
+    raise HostingError(f"codeup 适配器不支持 {op}: {why}（ADR-008 平台缺口）", code=2)
+
+
+class CodeupAdapter:
+    name = "codeup"
+
+    def __init__(self, repo="."):
+        self.repo = repo
+        self._repo_id = None
+        self._endpoint = None
+
+    # -- 配置 --
+    def _cfg(self):
+        token = os.environ.get("YUNXIAO_ACCESS_TOKEN")
+        if not token:
+            raise HostingError("codeup 需要 YUNXIAO_ACCESS_TOKEN（云效个人访问令牌）",
+                               code=2)
+        org = os.environ.get("CODEUP_ORG_ID")
+        if not org:
+            raise HostingError("codeup 需要 CODEUP_ORG_ID（组织管理后台-基本信息）",
+                               code=2)
+        return token, org
+
+    def repo_ref(self):
+        rid = os.environ.get("CODEUP_REPO_ID")
+        if rid:
+            return rid
+        path = os.environ.get("CODEUP_REPO_PATH")
+        if path:
+            return urllib.parse.quote(path, safe="")
+        raise HostingError(
+            "codeup 需要 CODEUP_REPO_ID 或 CODEUP_REPO_PATH（URL 编码全路径）",
+            code=2)
+
+    # -- HTTP --
+    def _req(self, method, path, body=None, query=None, _retry_rdc=True):
+        token, org = self._cfg()
+        if self._endpoint is None:
+            self._endpoint = os.environ.get("YUNXIAO_ENDPOINT",
+                                            "openapi.aliyun.com")
+        url = f"https://{self._endpoint}{path}"
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("x-yunxiao-token", token)
+        if data:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                payload = json.loads(resp.read().decode() or "{}")
+        except urllib.error.URLError as e:
+            # 【实测】默认端点受限网络下 TLS 静默丢弃 → 中心版端点重试一次
+            if _retry_rdc and self._endpoint == "openapi.aliyun.com":
+                self._endpoint = "openapi-rdc.aliyuncs.com"
+                return self._req(method, path, body, query, _retry_rdc=False)
+            raise HostingError(f"codeup 请求不可达（{self._endpoint}）: {e}")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode()[:300]
+            raise HostingError(
+                f"codeup {method} {path} HTTP {e.code}: {detail}")
+        except json.JSONDecodeError as e:
+            # 200 + 空/畸形体（代理、网关截断）：fail-closed 成 HostingError，
+            # 不让裸 JSONDecodeError 逃出适配器边界（PR #64 Sourcery）
+            raise HostingError(
+                f"codeup {method} {path} 响应格式错误（{self._endpoint}）: {e}")
+        # 【live 2026-08-26】组织级端点（MR 集合等）直接返回 JSON 数组——
+        # success/errorCode 包裹仅 dict 形态才有；列表响应原样透传
+        if isinstance(payload, dict) and payload.get("success") is False:
+            raise HostingError(
+                f"codeup {method} {path} 失败: "
+                f"{payload.get('errorCode')}: {payload.get('errorMessage')}")
+        return payload
+
+    def _base(self):
+        _, org = self._cfg()
+        return f"/oapi/v1/codeup/organizations/{org}/repositories/{self.repo_ref()}"
+
+    # -- 归一化 --
+    @staticmethod
+    def _pr(d):
+        reviewers = d.get("reviewers") or []
+        opinions = [r.get("reviewOpinionStatus") for r in reviewers]
+        if any(o == "NOT_PASS" for o in opinions):
+            review = "changes_requested"
+        elif reviewers and all(o == "PASS" for o in opinions):
+            review = "approved"
+        else:
+            review = "pending"
+        status = d.get("newVersionState") or d.get("state") or ""
+        return {"number": d.get("localId") or d.get("iid"),
+                "state": _CU_STATE.get(status, "open"), "review": review,
+                "mergeable": (True if d.get("conflictCheckStatus") == "NO_CONFLICT"
+                              else False if d.get("conflictCheckStatus") == "HAS_CONFLICT"
+                              else None),
+                "labels": [l.get("name") for l in d.get("labels") or [] if l.get("name")],
+                "title": d.get("title") or "",
+                "body": d.get("description") or "",
+                "head": d.get("sourceBranch") or "",
+                "base": d.get("targetBranch") or ""}
+
+    # -- ops --
+    def auth_ok(self):
+        try:
+            # 探测 = 鉴权 + 连通。【live 2026-08-26】MR 集合是组织级端点
+            # （无 /repositories 段，projectIds query 过滤；仓库级集合 404），
+            # 分页参数 perPage（pageSize 仅单体/labels 端点有效）
+            _, org = self._cfg()
+            self._req(
+                "GET", f"/oapi/v1/codeup/organizations/{org}/changeRequests",
+                query={"page": 1, "perPage": 1, "projectIds": self.repo_ref()})
+            return True
+        except HostingError as e:
+            print(f"[hosting] codeup 鉴权探测失败: {e}", file=sys.stderr)
+            return False
+
+    # -- 工作项面（issue 等价物，#67 live 已验形态；forge 参考实现迁移）--
+
+    _WI_LABELS_MARK = re.compile(r"<!--\s*factory:labels:v1:\s*(.*?)\s*-->")
+
+    @classmethod
+    def _wi_labels_of(cls, wi):
+        """标签读取按载体分派：native=labels 字段；description=尾部注释块
+        （云效 Task 类型常无 labels 字段——PUT 报 does not contains field,
+        ADR-007 实测;富文本完整保留 HTML 注释）。载体由 env
+        CODEUP_ISSUE_LABELS 选择（native|description,默认 native）。"""
+        if os.environ.get("CODEUP_ISSUE_LABELS", "native") == "description":
+            m = cls._WI_LABELS_MARK.search(wi.get("description") or "")
+            return m.group(1).split() if m and m.group(1) else []
+        return [l for l in (wi.get("labels") or []) if isinstance(l, str)]
+
+    @classmethod
+    def _wi_state_of(cls, wi):
+        # logicalStatus: NORMAL=活跃;FINISHED/其余=closed（保守:不误清标签）
+        return "open" if (wi.get("logicalStatus") or "NORMAL") == "NORMAL" else "closed"
+
+    @staticmethod
+    def _wi_text(raw):
+        """description 双形态（{"htmlValue":...} JSON 串 / 裸 HTML）→ 纯文本。"""
+        s = raw or ""
+        if s.lstrip().startswith("{"):
+            try:
+                s = json.loads(s).get("htmlValue") or ""
+            except ValueError:
+                pass
+        # HTML 注释段原样保留：dedupe marker（<!-- m1 -->）与 labels 块
+        # （<!-- factory:labels:v1: ... -->）靠注释承载——剥标签会把注释
+        # 一起剥掉，marker 永不命中（#67 实现期实证）。labels 块的剥离
+        # 由 _wi_normalize 的专用 sub 负责。
+        parts = re.split(r"(<!--.*?-->)", s, flags=re.S)
+        s = "".join(seg if seg.startswith("<!--")
+                    else re.sub(r"<[^>]+>", " ", seg) for seg in parts)
+        return re.sub(r"[ \t]+", " ", s).strip()
+
+    def _wi_normalize(self, wi, comments=True):
+        body = self._wi_text(wi.get("description"))
+        # 标记块从正文剥离（native 载体下块不存在,sub 为无害 no-op）
+        body = self._WI_LABELS_MARK.sub("", body).strip()
+        _, org = self._cfg()
+        cs = []
+        if comments:
+            raw = self._req(
+                "GET",
+                f"/oapi/v1/projex/organizations/{org}/workitems/{wi['id']}/comments")
+            cs = [{"author": (c.get("author") or {}).get("name") or "",
+                   "body": self._wi_text(c.get("content"))}
+                  for c in (raw if isinstance(raw, list) else raw.get("result") or [])]
+        return {"number": wi.get("serialNumber") or wi.get("id"),
+                "state": self._wi_state_of(wi),
+                "title": wi.get("subject") or "",
+                "body": body,
+                "labels": self._wi_labels_of(wi),
+                "comments": cs}
+
+    def _wi_get(self, n):
+        """双键寻址：serialNumber（KFPT-16）或 24-hex id 均 200（live）。"""
+        _, org = self._cfg()
+        r = self._req(
+            "GET",
+            f"/oapi/v1/projex/organizations/{org}/workitems/{n}")
+        # live 形态：详情返回裸工作项 dict（无 result 包裹）;search 才包 result
+        if isinstance(r, dict):
+            return r.get("result") or r
+        return r or {}
+
+    def issue_view(self, n, repo=None):
+        return self._wi_normalize(self._wi_get(n))
+
+    def issue_labels(self, n, repo=None):
+        return self._wi_labels_of(self._wi_get(n))
+
+    def issue_list(self, state="open", label=None, limit=100,
+                   comments=False, repo=None):
+        # 【live】workitems:search：category 必填（workitemTypeId 过滤被拒
+        # "工作项类型不能为空"）;分页 perPage/page;摘要有 description——
+        # description 载体标签零 N+1。state 过滤客户端做（search 无
+        # logicalStatus 参数）;label 过滤"含有"语义对齐 GitHub
+        space = os.environ.get("CODEUP_SPACE_ID")
+        category = os.environ.get("CODEUP_WORKITEM_CATEGORY", "Task")
+        if not space:
+            raise HostingError(
+                "codeup issue list 需要 CODEUP_SPACE_ID（项目 id）", code=2)
+        _, org = self._cfg()
+        out, page = [], 1
+        while len(out) < limit:
+            payload = self._req(
+                "POST", f"/oapi/v1/projex/organizations/{org}/workitems:search",
+                body={"category": category, "spaceId": space,
+                      "perPage": 100, "page": page,
+                      "orderBy": "gmtCreate", "sort": "desc"})
+            batch = payload.get("result") if isinstance(payload, dict) else payload
+            if not batch:
+                break
+            out += [self._wi_normalize(wi, comments=comments) for wi in batch]
+            if len(batch) < 100:
+                break
+            page += 1
+        if state != "all":
+            out = [i for i in out if i["state"] == state]
+        if label:
+            out = [i for i in out if label in i["labels"]]
+        return out[:limit]
+
+    def issue_set_labels(self, n, add=(), remove=(), repo=None):
+        wi = self._wi_get(n)
+        labels = list(self._wi_labels_of(wi))
+        for x in add:
+            if x not in labels:
+                labels.append(x)
+        labels = [l for l in labels if l not in set(remove)]
+        _, org = self._cfg()
+        path = f"/oapi/v1/projex/organizations/{org}/workitems/{wi['id']}"
+        if os.environ.get("CODEUP_ISSUE_LABELS", "native") == "description":
+            # 读-改-写描述块：原文剥离旧块,尾部追加新块（空标签=移除块）
+            raw = wi.get("description") or ""
+            base = self._WI_LABELS_MARK.sub("", raw).rstrip()
+            desc = base + ("\n\n<!-- factory:labels:v1: "
+                           + " ".join(sorted(labels)) + " -->" if labels else "")
+            self._req("PUT", path, body={
+                "description": desc,
+                "formatType": wi.get("formatType") or "MARKDOWN"})
+        else:
+            self._req("PUT", path, body={"labels": sorted(set(labels))})
+        return True
+
+    def issue_comment(self, n, body, marker=None, repo=None):
+        if marker:
+            have = self.issue_view(n, repo)["comments"]
+            if any(f"<!-- {marker} -->" in c["body"] for c in have):
+                print(f"[dedupe] 评论标记 {marker} 已存在，跳过", file=sys.stderr)
+                return True
+            body = f"{body}\n<!-- {marker} -->\n"
+        wi = self._wi_get(n)  # 评论端点仅认 24-hex id（serialNumber 404）
+        _, org = self._cfg()
+        self._req(
+            "POST",
+            f"/oapi/v1/projex/organizations/{org}/workitems/{wi['id']}/comments",
+            body={"content": body, "contentType": "markdown"})
+        return True
+
+    def _default_cfvs(self, space, wit):
+        """拉字段配置,为全部 required 的 SystemCustomField 构造默认值
+        （forge 实装迁移,PR #62 破案:开始=今日/完成=+7d/float="0.5"/
+        date=今日/list=末档 option id——「末项=最低档」为实测约定）。"""
+        today = datetime.date.today().isoformat()
+        due = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
+        _, org = self._cfg()
+        fields = self._req(
+            "GET", f"/oapi/v1/projex/organizations/{org}/projects/{space}"
+                  f"/workitemTypes/{wit}/fields")
+        out = {}
+        for f in (fields if isinstance(fields, list) else fields.get("result", [])):
+            if f.get("required") not in (True, "true", 1):
+                continue
+            if f.get("type") == "NativeField":
+                continue  # subject/assignedTo 走 create 本体字段
+            fid, name, fmt = str(f["id"]), f["name"], f.get("format", "")
+            if "开始" in name:
+                out[fid] = today
+            elif "完" in name or "结束" in name:
+                out[fid] = due
+            elif fmt == "float":
+                out[fid] = "0.5"
+            elif fmt == "date":
+                out[fid] = today
+            elif f.get("options"):
+                out[fid] = str(f["options"][-1]["id"])
+        return out
+
+    def issue_create(self, title, body, label=None, repo=None):
+        # forge 实装迁移（PR #62 实测破案,真实 Codeup 项目创建验证）：
+        # create 本体必填仅 4 项;「计划开始时间」等模板必填是
+        # SystemCustomField,须以 customFieldValues {"fieldId":"value"}
+        # 平面对象传（数组形态 Invalid format;value 形态见 _default_cfvs）。
+        space = os.environ.get("CODEUP_SPACE_ID")
+        wit = os.environ.get("CODEUP_WORKITEM_TYPE_ID")
+        assignee = os.environ.get("CODEUP_ASSIGN_USER_ID")
+        missing = [k for k, v in (("CODEUP_SPACE_ID", space),
+                                  ("CODEUP_WORKITEM_TYPE_ID", wit),
+                                  ("CODEUP_ASSIGN_USER_ID", assignee)) if not v]
+        if missing:
+            raise HostingError(
+                "codeup issue create 需要 " + "/".join(missing)
+                + "（space=项目 id、wit=工作项类型 id、assign=指派人 24-hex"
+                  " 用户 id——工作项详情 assignedTo.id 形态;成员查询端点"
+                  "不可达,值从云效界面取）", code=2)
+        _, org = self._cfg()
+        payload = {"spaceId": space, "subject": title,
+                   "workitemTypeId": wit, "description": body or "",
+                   "assignedTo": assignee}
+        try:
+            payload["customFieldValues"] = self._default_cfvs(space, wit)
+        except HostingError as e:
+            # 字段配置拉取失败降级告警不阻断（forge 同款行为）：create 由
+            # 平台按模板必填裁决,平台错比静默跳过更可诊断
+            print(f"[hosting] [warn] 字段配置拉取失败,create 可能因模板"
+                  f"必填被拒: {e}", file=sys.stderr)
+        if label:
+            # 云效 Task 类型常无 labels 字段（ADR-007 实测：PUT 报
+            # "workitem does not contains field"）；等价载体 =
+            # description 尾部 HTML 注释块（富文本完整保留，读取时剥离）
+            payload["description"] = (
+                (body or "") + f"\n\n<!-- factory:labels:v1: {label} -->")
+        r = self._req("POST",
+                      f"/oapi/v1/projex/organizations/{org}/workitems", payload)
+        d = r.get("result") if isinstance(r, dict) else r
+        d = d or {}
+        wid = d.get("id")
+        # 【live 2026-08-26】create 响应只含 24-hex id，无 serialNumber
+        # （实测项目 KFPT-21）；人类可读编号（KFPT-N）须回查
+        # 详情。回查失败降级 id（view/编辑两种键都认，但人在界面引用
+        # 序号——宁可多一次 GET）
+        number = d.get("serialNumber") or wid
+        url = d.get("detailUrl", "")
+        if wid:
+            try:
+                det = self._req(
+                    "GET",
+                    f"/oapi/v1/projex/organizations/{org}/workitems/{wid}")
+                det = det.get("result") if isinstance(det, dict) else det
+                number = (det or {}).get("serialNumber") or wid
+                url = (det or {}).get("detailUrl") or url
+            except HostingError as e:
+                print(f"[hosting] [warn] serialNumber 回查失败,返回 id: {e}",
+                      file=sys.stderr)
+        return {"number": number, "url": url}
+
+    def _pr_labels(self, p):
+        # 【live 2026-08-26】MR 详情响应无 labels 字段——类标须专用端点读回
+        try:
+            payload = self._req("GET", f"{self._base()}/changeRequests/{p}/labels")
+            items = payload if isinstance(payload, list) else (payload.get("result") or [])
+            return [l.get("name") for l in items if l.get("name")]
+        except HostingError:
+            return []  # 类标读失败不阻断详情（labels 置空，消费方按无类标处理）
+
+    def pr_view(self, p, repo=None):
+        # 【live 2026-08-26】单体端点是仓库级（仓库级集合 404、单体正常）
+        d = self._req("GET", f"{self._base()}/changeRequests/{p}")
+        out = self._pr(d.get("result", d))
+        out["labels"] = self._pr_labels(p)
+        return out
+
+    def pr_list(self, state="open", label=None, limit=100, repo=None):
+        # 【live 2026-08-26 实测项目】集合是组织级端点（无
+        # /repositories 段；仓库级集合 404——ADR-007 forge 期同发现），
+        # GET + URL query 过滤 projectIds（POST/body 形态被拒），分页
+        # perPage；state 服务端过滤 opened。label 过滤客户端做（labelIds
+        # 服务端过滤需类标 ID，留待需要时启用）
+        _, org = self._cfg()
+        out, page = [], 1
+        while len(out) < limit:
+            payload = self._req(
+                "GET", f"/oapi/v1/codeup/organizations/{org}/changeRequests",
+                query={"page": page, "perPage": 100,
+                       "projectIds": self.repo_ref(),
+                       "state": "opened" if state == "open" else "all"})
+            batch = payload if isinstance(payload, list) else (payload.get("result") or [])
+            out += [self._pr(d) for d in batch]
+            if len(batch) < 100:  # 页短于 perPage = 末页（空页/短页都停）
+                break
+            page += 1
+        if state != "all":
+            out = [p for p in out if p["state"] == "open"]
+        if label:
+            out = [p for p in out if label in p["labels"]]
+        return out[:limit]
+
+    def pr_set_labels(self, p, add=(), remove=(), repo=None):
+        if remove:
+            _unsupported("pr set-labels --remove",
+                         "Codeup 类标仅有 Link 端点、无 Unlink")
+        ids = [self._label_id(name) for name in add]
+        # 【live 2026-08-26】LinkMergeRequestLabel body 键是 labelIdList
+        # （labelIds/labels/labelId 均被拒："Invalid param value [null]"）
+        if ids:
+            self._req("POST", f"{self._base()}/changeRequests/{p}/labels",
+                      body={"labelIdList": ids})
+        return True
+
+    def _label_id(self, name):
+        # 【文档推导】ListProjectLabels → name→id
+        payload = self._req("GET", f"{self._base()}/labels",
+                            query={"page": 1, "pageSize": 100})
+        for l in (payload if isinstance(payload, list) else (payload.get("result") or [])):
+            if l.get("name") == name:
+                return l.get("id")
+        raise HostingError(f"类标 {name} 不存在（先 label ensure）", code=2)
+
+    def pr_create(self, head, title, body, label=None, base=None, repo=None):
+        # 【文档推导】CreateMergeRequest（body 形态经文档核实）
+        rid = self.repo_ref()
+        payload = self._req("POST", f"{self._base()}/changeRequests", body={
+            "title": title, "description": body,
+            "sourceBranch": head, "targetBranch": base or "master",
+            "sourceProjectId": rid, "targetProjectId": rid})
+        result = payload.get("result", payload)
+        url = result.get("detailUrl") or result.get("webUrl") or ""
+        if label:
+            local_id = result.get("localId")
+            if local_id:
+                try:
+                    self.pr_set_labels(local_id, add=[label])
+                except HostingError as e:
+                    print(f"[hosting] PR 已建但打标失败: {e}", file=sys.stderr)
+        return {"number": result.get("localId"), "url": url}
+
+    def pr_comment(self, p, body, repo=None):
+        # 【实测】comment_type 无默认值、resolved 必填（skills 沉淀）
+        self._req("POST", f"{self._base()}/changeRequests/{p}/comments",
+                  body={"comment_type": "GLOBAL_COMMENT", "content": body,
+                        "resolved": True})
+        return True
+
+    def pr_close(self, p, repo=None):
+        # 【live 2026-08-26】唯一生效形态 = POST /close 空 body（实测项目
+        # MR#7 实测：POST {} → 200 且状态转 CLOSED）。陷阱：PUT 详情端点带
+        # {"state":"closed"} 返回 {"result":true} 但状态不变——假阳性，勿用。
+        self._req("POST", f"{self._base()}/changeRequests/{p}/close", body={})
+        return True
+
+    def pr_diff(self, p, name_only=False, repo=None):
+        if name_only:
+            # 【文档推导】GetMergeRequestChangeTree → 变更文件路径
+            payload = self._req(
+                "GET", f"{self._base()}/changeRequests/{p}/changeTree")
+            tree = payload.get("result") or {}
+            paths = []
+
+            def _walk(node):
+                for ch in node.get("children") or node.get("subTrees") or []:
+                    if (ch.get("type") or ch.get("nodeType")) == "blob":
+                        paths.append(ch.get("path") or ch.get("name"))
+                    else:
+                        _walk(ch)
+            _walk(tree)
+            return "\n".join(paths)
+        _unsupported("pr diff 全文", "Codeup 无 unified diff 文本端点（变更树可查路径）")
+
+    def pr_merge(self, p, method="merge", repo=None):
+        # 【文档推导】MergeMergeRequest（mergeType 枚举对齐）
+        self._req("POST", f"{self._base()}/changeRequests/{p}/merge",
+                  body={"mergeType": _CU_MERGE_METHOD.get(method, "no-fast-forward"),
+                        "removeSourceBranch": False})
+        return True
+
+    def pr_close(self, p, repo=None):
+        # 【live 2026-08-26】唯一生效形态 = POST /close 空 body（实测项目
+        # MR#7 实测：POST {} → 200 且状态转 CLOSED）。陷阱：PUT 详情端点带
+        # {"state":"closed"} 返回 {"result":true} 但状态不变——假阳性，勿用。
+        self._req("POST", f"{self._base()}/changeRequests/{p}/close", body={})
+        return True
+
+    def label_ensure(self, name, color, desc):
+        # 【文档推导】CreateProjectLabel；已存在（409/重复码）视为成功
+        try:
+            self._req("POST", f"{self._base()}/labels",
+                      body={"name": name, "color": f"#{color}", "description": desc})
+            return True
+        except HostingError as e:
+            if "HTTP 4" in str(e):
+                return True  # 已存在/冲突 → ensure 语义达成
+            raise
+
+    def label_history(self, p):
+        _unsupported("label history", "Codeup 无标签事件时间线（轮次计数不可派生）")
+
+
+ADAPTERS = {"github": GitHubAdapter, "codeup": CodeupAdapter}
+
+
+def current_adapter(repo="."):
+    cls = ADAPTERS.get(FACTORY_HOSTING)
+    if not cls:
+        raise HostingError(f"未知 FACTORY_HOSTING: {FACTORY_HOSTING}", code=2)
+    return cls(repo)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _csv(v):
+    return [x for x in (v or "").split(",") if x]
+
+
+def _body(args):
+    if args.body_file:
+        with open(args.body_file, encoding="utf-8") as f:
+            return f.read()
+    return args.body or ""
+
+
+def _emit(obj):
+    print(json.dumps(obj, ensure_ascii=False))
+
+
+def main(argv):
+    p = argparse.ArgumentParser(prog="hosting.py", add_help=True,
+                                 description="托管平台抽象层（ADR-008）")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    ap = sub.add_parser("auth")
+    ap.add_argument("ok", nargs="?", default="ok")  # `auth ok` 探测惯用形
+
+    sp = sub.add_parser("label")
+    lsp = sp.add_subparsers(dest="label_cmd", required=True)
+    en = lsp.add_parser("ensure")
+    en.add_argument("name"); en.add_argument("color"); en.add_argument("desc")
+    lsp.add_parser("history").add_argument("pr")
+
+    ip = sub.add_parser("issue")
+    isp = ip.add_subparsers(dest="issue_cmd", required=True)
+    isp.add_parser("view").add_argument("n")
+    isp.add_parser("get-labels").add_argument("n")
+    il = isp.add_parser("list")
+    il.add_argument("--state", default="open", choices=["open", "all"])
+    il.add_argument("--label"); il.add_argument("--limit", type=int, default=100)
+    il.add_argument("--comments", action="store_true")
+    sl = isp.add_parser("set-labels")
+    sl.add_argument("n"); sl.add_argument("--add"); sl.add_argument("--remove")
+    ic = isp.add_parser("comment")
+    ic.add_argument("n")
+    _body_opts(ic)
+    ic.add_argument("--marker")
+    icr = isp.add_parser("create")
+    icr.add_argument("--title", required=True)
+    _body_opts(icr)
+    icr.add_argument("--label"); icr.add_argument("--repo")
+
+    pp = sub.add_parser("pr")
+    psp = pp.add_subparsers(dest="pr_cmd", required=True)
+    pv = psp.add_parser("view"); pv.add_argument("p"); pv.add_argument("--repo")
+    pl = psp.add_parser("list")
+    pl.add_argument("--state", default="open", choices=["open", "all"])
+    pl.add_argument("--label"); pl.add_argument("--limit", type=int, default=100)
+    pl.add_argument("--repo")
+    psl = psp.add_parser("set-labels")
+    psl.add_argument("p"); psl.add_argument("--add"); psl.add_argument("--remove")
+    pcr = psp.add_parser("create")
+    pcr.add_argument("--head", required=True); pcr.add_argument("--title", required=True)
+    _body_opts(pcr)
+    pcr.add_argument("--label"); pcr.add_argument("--base"); pcr.add_argument("--repo")
+    pc = psp.add_parser("comment")
+    pc.add_argument("p"); _body_opts(pc)
+    pd = psp.add_parser("diff")
+    pd.add_argument("p"); pd.add_argument("--name-only", action="store_true")
+    pm = psp.add_parser("merge")
+    pm.add_argument("p")
+    pm.add_argument("--method", default="merge",
+                    choices=["merge", "squash", "rebase"])
+
+    args = p.parse_args(argv)
+    try:
+        ad = current_adapter()
+
+        if args.cmd == "auth":
+            sys.exit(0 if ad.auth_ok() else 1)
+
+        if args.cmd == "label":
+            if args.label_cmd == "ensure":
+                sys.exit(0 if ad.label_ensure(args.name, args.color, args.desc) else 1)
+            _emit(ad.label_history(args.pr))
+
+        elif args.cmd == "issue":
+            if args.issue_cmd == "view":
+                _emit(ad.issue_view(args.n))
+            elif args.issue_cmd == "get-labels":
+                _emit(ad.issue_labels(args.n))
+            elif args.issue_cmd == "list":
+                _emit(ad.issue_list(state=args.state, label=args.label,
+                                    limit=args.limit, comments=args.comments))
+            elif args.issue_cmd == "set-labels":
+                ad.issue_set_labels(args.n, add=_csv(args.add), remove=_csv(args.remove))
+            elif args.issue_cmd == "comment":
+                ad.issue_comment(args.n, _body(args), marker=args.marker)
+            elif args.issue_cmd == "create":
+                _emit(ad.issue_create(args.title, _body(args),
+                                      label=args.label, repo=args.repo))
+
+        elif args.cmd == "pr":
+            if args.pr_cmd == "view":
+                _emit(ad.pr_view(args.p, repo=args.repo))
+            elif args.pr_cmd == "list":
+                _emit(ad.pr_list(state=args.state, label=args.label,
+                                 limit=args.limit, repo=args.repo))
+            elif args.pr_cmd == "set-labels":
+                ad.pr_set_labels(args.p, add=_csv(args.add), remove=_csv(args.remove))
+            elif args.pr_cmd == "create":
+                _emit(ad.pr_create(args.head, args.title, _body(args),
+                                   label=args.label, base=args.base, repo=args.repo))
+            elif args.pr_cmd == "comment":
+                ad.pr_comment(args.p, _body(args))
+            elif args.pr_cmd == "diff":
+                out = ad.pr_diff(args.p, name_only=args.name_only)
+                print(out if isinstance(out, str) else json.dumps(out))
+            elif args.pr_cmd == "merge":
+                ad.pr_merge(args.p, method=args.method)
+    except HostingError as e:
+        print(f"[hosting] {e}", file=sys.stderr)
+        sys.exit(e.code)
+
+
+def _body_opts(sp):
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--body")
+    g.add_argument("--body-file")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

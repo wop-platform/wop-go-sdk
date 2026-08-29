@@ -1,0 +1,42 @@
+{
+  "description": "工厂本地化配置（M4 本地化外置 + 拆分前置 ADR-009）：周界/判据措辞/门命令/prompt 仓库参数/上游指针是数据不是代码——guard.py / factory_lib.py / 链脚本 / prompts 因此零本地化、按 DISTRIBUTION.json full 分发；本文件每仓一份（skip 分发，永不跨仓覆盖）。fail-closed：缺失/损坏/缺键 = 使用方直接非零退出。周界仍须与 MISSION.md「周界（PERIMETER）」一致——guard.self_check 每次运行强制核对（MISSION 是真相源，本文件是机械化载体）；改本文件后必须重跑 .factory/mutations/run.py 重证 kill rate，evidence-stamp.json 指纹绑定会强制这一点。",
+  "perimeter": [
+    "MISSION.md",
+    "README.md",
+    "CONTRIBUTING.md",
+    ".factory/",
+    "scripts/",
+    "go.mod",
+    "go.sum",
+    ".github/",
+    ".gitignore",
+    "signature.go",
+    "digest.go",
+    "encoding.go",
+    "keyencrypt.go",
+    "sm2raw.go",
+    "keys.go",
+    "signheader.go",
+    "canonical.go",
+    "verify.go",
+    "internal/"
+  ],
+  "reject_guidance": {
+    "a": "判据a（使命一致）：写明落点——SDK 代码（根包 .go）、测试（*_test.go）或文档（docs/）中的哪个文件/模块；",
+    "b": "判据b（可判定）：把完成标准写成可机械验证的形式——验收 = 具体测试的断言（go test 中的测试函数名、逐条清单、file:line 级差异），避免「持续 / 优化 / 修收」类开放措辞；doc-only（纯文档）改动在验证门零投影——补可断言测试或转人工 MR；",
+    "c": "判据c（不触周界）：触及 PERIMETER 的部分拆成独立 issue 走人类 PR（清单见 MISSION.md；安全敏感面 signature/digest/encoding/keyencrypt/sm2raw/keys/signheader/canonical/verify 与向量真源 internal/ 默认全锁）；"
+  },
+  "repo_identity": "wop-go-sdk",
+  "reading_scopes": [
+    "README.md",
+    "docs/",
+    "go.mod",
+    "internal/"
+  ],
+  "review_basis": "docs/ + 既有测试形态（*_test.go）",
+  "final_gate_cmd": "scripts/run_tests.sh --no-lock",
+  "pr_review_skills": [],
+  "upstream_repo": "wop-platform/wop-go-sdk",
+  "upstream_path": "~/sources/open-platform/wop-go-sdk",
+  "feedback_branch_prefix": "feedback/wop-go-sdk"
+}
