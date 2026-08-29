@@ -7,7 +7,6 @@ content-digest、L2 数字信封、验签解密）与 HTTP 适配层，商户无
 - 向量真源：[crypto-vectors.json](https://github.com/wop-platform/wop-specs/blob/main/crypto/crypto-vectors.json)（本仓 fixture 为字节级副本，禁手改）
 - 三套件全支持：`WOP-RSA3072-SHA256` / `WOP-RSA4096-SHA256`（crypto/rsa）与 `WOP-SM2-SM3`（emmansun/gmsm）
 - 零非白名单依赖：运行时依赖仅 [emmansun/gmsm](https://github.com/emmansun/gmsm)（国密算法唯一指定路径，勿用 tjfoc/gmsm——无 GCM）
-- MIT License，版本 v0.1.0
 
 ## 快速开始
 

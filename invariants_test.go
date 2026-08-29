@@ -390,8 +390,8 @@ func TestCoverageGap_VerifyL2Malformed(t *testing.T) {
 	sig, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, []byte(canonical), rnd)
 	h.Set(HeaderSign, buildSignHeader(suite.SecurityReq(), 1800,
 		[]string{HeaderContentDigest, HeaderEncrypt, HeaderNonce, HeaderTimestamp}, sig))
-	if res := c.VerifyResponse("POST", "/p", h, wire); res.OK || res.Code != CodeProtocol {
-		t.Errorf("畸形 dek 载荷: ok=%v code=%s", res.OK, res.Code)
+	if res := c.VerifyResponse("POST", "/p", h, wire); res.OK || res.Code != CodeDecryptFailed {
+		t.Errorf("畸形 dek 载荷（合同 n13）: ok=%v code=%s, want DECRYPT_FAILED", res.OK, res.Code)
 	}
 
 	// x-wop-encrypt 头本身非法

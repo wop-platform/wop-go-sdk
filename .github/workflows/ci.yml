@@ -7,19 +7,35 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest] # macos-latest = arm64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
+      - name: crypto vectors truth-source hash anchor
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/wop-platform/wop-specs/main/crypto/crypto-vectors.json -o /tmp/crypto-vectors.truth.json
+          truth=$(shasum -a 256 /tmp/crypto-vectors.truth.json | cut -d' ' -f1)
+          ours=$(shasum -a 256 internal/testdata/crypto-vectors.json | cut -d' ' -f1)
+          echo "truth sha256: ${truth}"
+          echo "local sha256: ${ours}"
+          if [ "$truth" != "$ours" ]; then
+            echo "::error::internal/testdata/crypto-vectors.json 与真源 wop-specs/crypto/crypto-vectors.json 不一致（sha256 不匹配），请先同步真源再提交"
+            exit 1
+          fi
       - name: gofmt check
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
         run: go vet ./...
       - name: test + coverage
         run: |
-          go test ./... -covermode=atomic -coverprofile=cover.out
+          go test ./... -covermode=atomic -coverprofile=cover.out -coverpkg=.
           total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%","",$3); print $3}')
           echo "total statement coverage: ${total}%"
           awk -v t="$total" 'BEGIN { if (t+0 < 98) { print "coverage " t "% < 98%"; exit 1 } }'

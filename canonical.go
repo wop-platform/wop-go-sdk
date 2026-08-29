@@ -38,18 +38,11 @@ func CanonicalHeaders(headers map[string]string) string {
 //	authString\nhttpRequestMethod\ncanonicalURI\ncanonicalQueryString\ncanonicalHeaders
 //
 // POST 的 canonicalQueryString 为空串，分隔空行不可省略；
-// method 统一大写。空入参按空串处理（与网关 build 行为一致）。
+// method 统一大写。Go string 零值即 ""，天然等价网关 build 的 null→"" 合并。
 func CanonicalRequest(authString, method, canonicalURI, canonicalQueryString, canonicalHeaders string) string {
-	return nz(authString) + "\n" +
-		strings.ToUpper(strings.TrimSpace(nz(method))) + "\n" +
-		nz(canonicalURI) + "\n" +
-		nz(canonicalQueryString) + "\n" +
-		nz(canonicalHeaders)
-}
-
-func nz(s string) string {
-	if s == "" {
-		return ""
-	}
-	return s
+	return authString + "\n" +
+		strings.ToUpper(strings.TrimSpace(method)) + "\n" +
+		canonicalURI + "\n" +
+		canonicalQueryString + "\n" +
+		canonicalHeaders
 }

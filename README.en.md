@@ -11,7 +11,6 @@ integrate without touching the wire formats.
 - Zero non-whitelisted dependencies: the only runtime dependency is
   [emmansun/gmsm](https://github.com/emmansun/gmsm) (the designated SM library — do NOT use
   tjfoc/gmsm, it lacks GCM)
-- MIT License, version v0.1.0
 
 ## Quick Start
 

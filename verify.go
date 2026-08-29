@@ -106,7 +106,9 @@ func (c *Client) verify(method, path string, header http.Header, wireBody []byte
 	}
 	payload, err := parseDekPayload(string(payloadPlain))
 	if err != nil {
-		return verifyFail(err)
+		// 载荷结构在解包之后才可见，属密钥参与层；除 alg 族不符（D8 明确）外
+		// 一律归入解密类模糊（I7 保守默认，与跨仓 interop 合同 n13 对齐）
+		return verifyFail(fuzzyError(CodeDecryptFailed))
 	}
 	if !payload.matchesSuite(suite) {
 		return verifyFail(newError(CodeAlgMismatch,

@@ -1,0 +1,40 @@
+# Go 模块发布 = 打 tag 即发布：
+# proxy.golang.org 自动索引 tag（https://proxy.golang.org），无需任何发布凭证。
+# 本 workflow 仅做发布前验证——复用 ci.yml 的完整门禁命令，全部通过后即认为该 tag 可用；
+# 不存在"发布步骤"，因此不存在半发布状态。验证失败时请立即删除 tag（代理可能已缓存）。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: gofmt check
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: test + coverage
+        run: |
+          go test ./... -covermode=atomic -coverprofile=cover.out
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%","",$3); print $3}')
+          echo "total statement coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { if (t+0 < 98) { print "coverage " t "% < 98%"; exit 1 } }'
+      - name: dependency whitelist
+        run: |
+          deps=$(go list -deps -f '{{if .Module}}{{.Module.Path}}{{end}}' . | sort -u | grep -Ev '^(github.com/wop-platform/wop-go-sdk|github.com/emmansun/gmsm|golang.org/x/crypto|golang.org/x/sys)$' | grep -v '^$' || true)
+          if [ -n "$deps" ]; then echo "non-whitelisted deps:"; echo "$deps"; exit 1; fi
+      - name: release note
+        run: |
+          echo "tag ${GITHUB_REF_NAME} 已通过全部发布前验证。"
+          echo "Go 模块无需显式发布：proxy.golang.org 将自动索引该 tag。"
+          echo "进度可查: https://pkg.go.dev/github.com/wop-platform/wop-go-sdk@${GITHUB_REF_NAME}"
