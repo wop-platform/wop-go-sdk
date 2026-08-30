@@ -1,4 +1,5 @@
 # WOP Go SDK
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/wop-platform/wop-go-sdk?utm_source=oss&utm_medium=github&utm_campaign=wop-platform%2Fwop-go-sdk&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 WOP 网关商户侧官方 Go 客户端库：封装协议核心（套件解析、canonicalRequest、结构化签名、
 content-digest、L2 数字信封、验签解密）与 HTTP 适配层，商户无需理解线上字节格式即可安全对接。
