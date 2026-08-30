@@ -36,7 +36,7 @@
   "review_basis": "docs/ + 既有测试形态（*_test.go）",
   "final_gate_cmd": "scripts/run_tests.sh --no-lock",
   "pr_review_skills": [],
-  "upstream_repo": "wop-platform/wop-go-sdk",
-  "upstream_path": "~/sources/open-platform/wop-go-sdk",
+  "upstream_repo": "im47cn/awesome-rules",
+  "upstream_path": "~/sources/awesome-rules",
   "feedback_branch_prefix": "feedback/wop-go-sdk"
 }
