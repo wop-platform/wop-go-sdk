@@ -6,6 +6,7 @@ name: sourcery-review-gate
 # - 清零判定不用评论状态：GitHub 会把已修复评论的 thread 自动重新锚定（position 恒非 null，
 #   commit_id 甚至跟随到新 head），无法区分已修复/未修复；CLI --check 与 bot 同引擎同配置，
 #   输出即当前 head 的真值。pull_request_review_comment 事件：sourcery 评论/回复到达时立即重估。
+# - fork PR 无 secrets：跳过门禁（外部贡献走维护者复核）；workflow_dispatch：base 用默认分支。
 # 前提：仓库需配置 SOURCERY_TOKEN secret（sourcery.ai 账号 token），否则本 job 显式失败。
 
 on:
@@ -24,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -34,11 +35,17 @@ jobs:
         env:
           SOURCERY_TOKEN: ${{ secrets.SOURCERY_TOKEN }}
         run: |
+          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name }}"
+          if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" != "${{ github.repository }}" ]; then
+            echo "fork PR：无 SOURCERY_TOKEN 可用，gate 跳过（外部贡献走维护者复核）。"
+            exit 0
+          fi
           if [ -z "$SOURCERY_TOKEN" ]; then
             echo "::error::SOURCERY_TOKEN secret 未配置：仓库 Settings → Secrets and variables → Actions 添加 sourcery.ai 账号 token，否则本门禁无法运行。"
             exit 1
           fi
           BASE="${{ github.event.pull_request.base.ref }}"
+          [ -z "$BASE" ] && BASE="${{ github.event.repository.default_branch }}"
           git fetch origin "$BASE" --quiet
           FILES=$(git diff --name-only "origin/$BASE...HEAD" \
             | grep -E '\.(py|go|java|cs|php|ts|js)$' || true)
