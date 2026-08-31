@@ -118,6 +118,24 @@
       "replace": "摘要对象 = data 原始字节（负例：仅注释措辞）",
       "gate": "tests",
       "expect_block": false
+    },
+    {
+      "id": "D-01",
+      "description": "docstring 缺失：删除 CanonicalHeaders 导出函数的紧邻注释块，对外 API 100% 被破坏，docstring 门应拦截",
+      "target": "canonical.go",
+      "find": "// CanonicalHeaders 构造规范标头（F2）：名称 lowercase + TrimAll + urlencode，\n// 值 TrimAll + urlencode，按名称 ASCII 升序，行间 '\\n' 连接，尾行不加 '\\n'。\n",
+      "replace": "",
+      "gate": "docstring",
+      "expect_block": true
+    },
+    {
+      "id": "D-02",
+      "description": "docstring 缺失：删除导出方法 Suite.Digest 的紧邻注释，对外 API 100% 被破坏，docstring 门应拦截",
+      "target": "digest.go",
+      "find": "// Digest 按套件族计算摘要（④）：RSA 族 → SHA-256，SM2 族 → SM3（I5）。\n",
+      "replace": "",
+      "gate": "docstring",
+      "expect_block": true
     }
   ]
 }

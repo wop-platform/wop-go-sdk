@@ -40,6 +40,7 @@ func decodeKeyMaterial(material string) ([]byte, error) {
 	return der, nil
 }
 
+// parseRSAPublicKey 解析 RSA 公钥（X.509 SPKI，PEM 或 Base64，D12）。
 func parseRSAPublicKey(material string) (*rsa.PublicKey, error) {
 	der, err := decodeKeyMaterial(material)
 	if err != nil {
@@ -56,6 +57,7 @@ func parseRSAPublicKey(material string) (*rsa.PublicKey, error) {
 	return rsaPub, nil
 }
 
+// parseRSAPrivateKey 解析 RSA 私钥（PKCS#8，PEM 或 Base64，D12）。
 func parseRSAPrivateKey(material string) (*rsa.PrivateKey, error) {
 	der, err := decodeKeyMaterial(material)
 	if err != nil {
@@ -110,6 +112,7 @@ func validateRSAKeySize(s Suite, key *rsa.PrivateKey) error {
 	return validateRSASize(s, key.N.BitLen())
 }
 
+// validateRSASize 校验密钥位数与套件 keyBits 一致（供公私钥两路复用）。
 func validateRSASize(s Suite, bits int) error {
 	if bits != s.KeyBits() {
 		return newError(CodeConfig, "RSA 密钥位数 %d 与套件 %s 要求的 %d 位不符",

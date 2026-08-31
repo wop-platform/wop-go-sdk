@@ -33,6 +33,7 @@ func pad32(v *big.Int) []byte {
 	return out
 }
 
+// sm2CurveN 返回 sm2p256v1 曲线阶 n（标量范围上界）。
 func sm2CurveN() *big.Int { return sm2.P256().Params().N }
 
 // a = p − 3（sm2p256v1 曲线参数）。
@@ -291,6 +292,7 @@ func sm2Decrypt(priv *ecdsa.PrivateKey, cipher []byte) ([]byte, error) {
 	return msg, nil
 }
 
+// concat32 拼接 X‖Y 两个定长 32 字节大端串（KDF 输入）。
 func concat32(x, y *big.Int) []byte {
 	z := make([]byte, 0, 64)
 	z = append(z, pad32(x)...)
@@ -298,6 +300,7 @@ func concat32(x, y *big.Int) []byte {
 	return z
 }
 
+// equalBytes 常时字节比较（防时序侧信道，用于 C3 校验）。
 func equalBytes(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

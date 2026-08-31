@@ -39,7 +39,9 @@ const (
 
 // I7 模糊化固定文案：验签/解密失败对外仅此二句，不携带任何细节。
 const (
-	verifyFuzzyMessage  = "签名验证失败"
+	// verifyFuzzyMessage 验签失败对外固定文案（I7 模糊化）。
+	verifyFuzzyMessage = "签名验证失败"
+	// decryptFuzzyMessage 解密失败对外固定文案（I7 模糊化）。
 	decryptFuzzyMessage = "解密失败"
 )
 

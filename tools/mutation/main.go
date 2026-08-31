@@ -36,33 +36,51 @@ import (
 	"time"
 )
 
+// status 变异体判定结果：killed（测试捕获）/ survived（测试盲区）/ invalid（编译失败不计分母）。
 type status string
 
 const (
-	statusKilled   status = "killed"
+	// statusKilled 测试失败：行为变异被捕获（含超时）。
+	statusKilled status = "killed"
+	// statusSurvived 测试全绿：变异存活，测试盲区。
 	statusSurvived status = "survived"
-	statusInvalid  status = "invalid"
+	// statusInvalid 编译失败：无效变异体，不计入击杀率分母。
+	statusInvalid status = "invalid"
 )
 
 // operator 变异算子（13 类实现，覆盖条件/数学/返回值/常量）。
 type operator string
 
 const (
-	opROR  operator = "ROR"  // 关系算子取反 (== <-> !=)
-	opOBB  operator = "OBB"  // 条件边界 (< <-> <=, > <-> >=)
-	opLOR  operator = "LOR"  // 逻辑连接词 (&& <-> ||)
-	opAOR  operator = "AOR"  // 算术 (+ <-> -, * <-> /)
-	opOKN  operator = "OKN"  // 整数常量 (n -> n+1)
-	opROI  operator = "ROI"  // 布尔字面量翻转 (true <-> false)
-	opCOI  operator = "COI"  // 条件真值注入 (if cond -> if true/false)
+	// opROR 关系算子取反（== <-> !=）。
+	opROR operator = "ROR" // 关系算子取反 (== <-> !=)
+	// opOBB 条件边界替换（< <-> <=、> <-> >=）。
+	opOBB operator = "OBB" // 条件边界 (< <-> <=, > <-> >=)
+	// opLOR 逻辑连接词替换（&& <-> ||）。
+	opLOR operator = "LOR" // 逻辑连接词 (&& <-> ||)
+	// opAOR 算术运算符替换（+ <-> -、* <-> /）。
+	opAOR operator = "AOR" // 算术 (+ <-> -, * <-> /)
+	// opOKN 整数常量增量（n -> n+1）。
+	opOKN operator = "OKN" // 整数常量 (n -> n+1)
+	// opROI 布尔字面量翻转（true <-> false）。
+	opROI operator = "ROI" // 布尔字面量翻转 (true <-> false)
+	// opCOI 条件真值注入（if cond -> if true/false）。
+	opCOI operator = "COI" // 条件真值注入 (if cond -> if true/false)
+	// opSDEL 语句删除。
 	opSDEL operator = "SDEL" // 语句删除
-	opIDM  operator = "IDM"  // 自增自减翻转 (++ <-> --)
-	opSBR  operator = "SBR"  // 移位方向翻转 (<< <-> >>)
-	opUOI  operator = "UOI"  // 一元负号删除 (-x -> x)
-	opLCR  operator = "LCR"  // 字符串字面量变异
-	opBRK  operator = "BRK"  // break <-> continue
+	// opIDM 自增自减翻转（++ <-> --）。
+	opIDM operator = "IDM" // 自增自减翻转 (++ <-> --)
+	// opSBR 移位方向翻转（<< <-> >>）。
+	opSBR operator = "SBR" // 移位方向翻转 (<< <-> >>)
+	// opUOI 一元负号删除（-x -> x）。
+	opUOI operator = "UOI" // 一元负号删除 (-x -> x)
+	// opLCR 字符串字面量变异。
+	opLCR operator = "LCR" // 字符串字面量变异
+	// opBRK break/continue 交换。
+	opBRK operator = "BRK" // break <-> continue
 )
 
+// operatorNames 算子代号 → 中文名（报告展示用）。
 var operatorNames = map[operator]string{
 	opROR:  "关系算子取反",
 	opOBB:  "条件边界替换",
@@ -79,6 +97,7 @@ var operatorNames = map[operator]string{
 	opBRK:  "break/continue 交换",
 }
 
+// mutant 单个变异体的报告条目（定位 + 算子 + 判定结果）。
 type mutant struct {
 	Operator operator `json:"op"`
 	File     string   `json:"file"`
@@ -104,6 +123,7 @@ type mutationSite struct {
 	apply     func(ast.Node) bool
 }
 
+// main 入口：基线绿校验 → 收集变异点 → 并发 worker 副本逐体执行 → 报告与口径B 门禁。
 func main() {
 	var (
 		outPath   = flag.String("out", "mutation-report.json", "报告输出路径")
@@ -203,6 +223,7 @@ func main() {
 
 // ---------- 变异点收集 ----------
 
+// collectSites 枚举根目录非测试源文件，AST 扫描收集全部单点变异位。
 func collectSites(root string) ([]string, []mutationSite, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -237,6 +258,7 @@ func collectSites(root string) ([]string, []mutationSite, error) {
 	return files, sites, nil
 }
 
+// fileSites 对单个已解析文件生成变异点清单（match/apply 闭包按节点位置定位）。
 func fileSites(f *ast.File, fset *token.FileSet) []mutationSite {
 	var out []mutationSite
 	posOf := func(p token.Pos) (int, int) {
@@ -438,6 +460,7 @@ func fileSites(f *ast.File, fset *token.FileSet) []mutationSite {
 	return out
 }
 
+// mustInt 解析整数为 int64，失败静默返回 0（报告辅助）。
 func mustInt(s string) int64 {
 	v, _ := strconv.ParseInt(s, 10, 64)
 	return v
@@ -472,8 +495,10 @@ func applyToFile(src []byte, s mutationSite) ([]byte, error) {
 
 // ---------- 执行与分类 ----------
 
+// buildFailRe 编译失败特征正则（命中即 invalid，不计击杀率分母）。
 var buildFailRe = regexp.MustCompile(`\[build failed\]|setup failed|symbol .* declared and not used|undefined:|invalid operation|cannot use|mismatched types|declared and not used`)
 
+// runTests 在 dir 内跑全量 go test，超时杀进程并返回 MUTATION_TIMEOUT 哨兵。
 func runTests(dir string, timeout time.Duration) (pass bool, output string) {
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = dir
@@ -494,6 +519,7 @@ func runTests(dir string, timeout time.Duration) (pass bool, output string) {
 	}
 }
 
+// classify 由测试通过与否与编译失败特征归类变异体判定。
 func classify(pass bool, output string) status {
 	if pass {
 		return statusSurvived
@@ -506,6 +532,7 @@ func classify(pass bool, output string) status {
 
 // ---------- 报告 ----------
 
+// report 汇总各算子击杀数并落档 JSON；gateB>0 时按口径B 门禁判定失败与否。
 func report(results []mutant, outPath string, gateB float64) bool {
 	type agg struct{ k, s, i int }
 	byOp := map[operator]*agg{}
@@ -621,6 +648,7 @@ func diagnosticStringPositions(f *ast.File) map[token.Pos]struct{} {
 	return out
 }
 
+// filterOnlyFiles 按文件名（basename）集合过滤变异点（增量/CI 用）。
 func filterOnlyFiles(sites []mutationSite, names []string) []mutationSite {
 	set := make(map[string]struct{}, len(names))
 	for _, n := range names {
@@ -637,6 +665,7 @@ func filterOnlyFiles(sites []mutationSite, names []string) []mutationSite {
 
 // ---------- 基础设施 ----------
 
+// filterOnly 按 file:line 模式过滤变异点（单点调试用）。
 func filterOnly(sites []mutationSite, pattern string) []mutationSite {
 	filePart, linePart, _ := strings.Cut(pattern, ":")
 	var out []mutationSite
@@ -648,6 +677,7 @@ func filterOnly(sites []mutationSite, pattern string) []mutationSite {
 	return out
 }
 
+// copyModule 复制 module 到独立工作副本（跳过 .git 与 tools，保留文件模式）。
 func copyModule(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
@@ -678,6 +708,7 @@ func copyModule(src, dst string) error {
 	})
 }
 
+// gofmt 对重写后的源码过一遍标准格式化（printer 输出对齐）。
 func gofmt(src []byte) ([]byte, error) {
 	cmd := exec.Command("gofmt")
 	cmd.Stdin = bytes.NewReader(src)
@@ -689,6 +720,7 @@ func gofmt(src []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// tailN 取输出末尾 n 行（失败诊断摘录用）。
 func tailN(s string, n int) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) > n {
@@ -697,6 +729,7 @@ func tailN(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// must 错误即致命退出（附上下文说明）。
 func must(err error, what string) {
 	if err != nil {
 		log.Fatalf("%s: %v", what, err)
