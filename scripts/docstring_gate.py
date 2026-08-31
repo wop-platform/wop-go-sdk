@@ -81,9 +81,48 @@ def has_doc(lines: list[str], idx: int) -> bool:
     if idx == 0:
         return False
     prev = lines[idx - 1]
-    if not prev.strip():
-        return False  # 注释块与声明间有空行 → 非紧邻
-    return is_comment_line(prev)
+    return is_comment_line(prev) if prev.strip() else False
+
+
+def _scan_func_decl(path: str, lines: list[str], i: int,
+                    symbols: list[Symbol]) -> None:
+    """顶层 func 行的符号提取：方法仅导出计对外，小写方法不计口径。"""
+    rest = lines[i][len("func "):].lstrip()
+    if rest.startswith("("):  # 方法：剥掉接收者段
+        close = rest.find(")")
+        if close < 0:
+            return
+        rest = rest[close + 1:].lstrip()
+    if m := SPEC_RE.match(rest):
+        name = m.group(1)
+        exported = name[0].isupper()
+        is_method = lines[i][len("func "):].lstrip().startswith("(")
+        # 契约口径：顶层 func 全计（大写=对外/小写=内部）
+        if not is_method or exported:
+            symbols.append(Symbol(path, i + 1, name, exported,
+                                  has_doc(lines, i)))
+
+
+def _scan_group_decl(path: str, lines: list[str], i: int,
+                     symbols: list[Symbol]) -> int:
+    """分组括号块（type/var/const）：最小缩进层 = 规格层，返回块尾行号。"""
+    min_indent: int | None = None
+    j = i + 1
+    n = len(lines)
+    while j < n and lines[j].strip() != ")":
+        raw = lines[j]
+        if not raw.strip() or is_comment_line(raw):
+            j += 1
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        if min_indent is None:
+            min_indent = indent
+        if indent == min_indent and (m := SPEC_RE.match(raw.lstrip())):
+            name = m.group(1)
+            symbols.append(Symbol(path, j + 1, name, name[0].isupper(),
+                                  has_doc(lines, j)))
+        j += 1
+    return j
 
 
 def scan_text(path: str, text: str) -> list[Symbol]:
@@ -95,53 +134,16 @@ def scan_text(path: str, text: str) -> list[Symbol]:
     """
     lines = text.split("\n")
     symbols: list[Symbol] = []
-    n = len(lines)
     i = 0
-    while i < n:
+    while i < len(lines):
         line = lines[i]
         if line.startswith("func "):
-            rest = line[len("func "):].lstrip()
-            is_method = rest.startswith("(")
-            if is_method:
-                close = rest.find(")")
-                if close < 0:
-                    i += 1
-                    continue
-                rest = rest[close + 1:].lstrip()
-            m = SPEC_RE.match(rest)
-            if m:
-                name = m.group(1)
-                exported = name[0].isupper()
-                # 契约口径：顶层 func 全计（大写=对外/小写=内部）；
-                # 方法仅导出方法计对外，小写方法不计任何口径。
-                if not is_method or exported:
-                    symbols.append(Symbol(path, i + 1, name, exported,
-                                          has_doc(lines, i)))
+            _scan_func_decl(path, lines, i, symbols)
         elif GROUP_RE.match(line):
-            # 分组声明（type/var/const 括号块）：最小缩进层 = 规格层
-            min_indent: int | None = None
-            j = i + 1
-            while j < n and lines[j].strip() != ")":
-                raw = lines[j]
-                if not raw.strip() or is_comment_line(raw):
-                    j += 1
-                    continue
-                indent = len(raw) - len(raw.lstrip())
-                if min_indent is None:
-                    min_indent = indent
-                if indent == min_indent:
-                    m = SPEC_RE.match(raw.lstrip())
-                    if m:
-                        name = m.group(1)
-                        symbols.append(Symbol(path, j + 1, name,
-                                              name[0].isupper(),
-                                              has_doc(lines, j)))
-                j += 1
-            i = j
+            i = _scan_group_decl(path, lines, i, symbols)
             continue
         elif line.startswith(("type ", "var ", "const ")):
-            m = SINGLE_RE.match(line)
-            if m:
+            if m := SINGLE_RE.match(line):
                 name = m.group(1)
                 symbols.append(Symbol(path, i + 1, name, name[0].isupper(),
                                       has_doc(lines, i)))
@@ -160,9 +162,8 @@ def go_files() -> list[str]:
         if not rel or rel.endswith("_test.go"):
             continue
         parts = Path(rel).parts
-        if any(p in EXCLUDED_PARTS for p in parts[:-1]):
-            continue
-        files.append(rel)
+        if all(p not in EXCLUDED_PARTS for p in parts[:-1]):
+            files.append(rel)
     return sorted(files)
 
 
@@ -171,17 +172,18 @@ def verdict(report: Report) -> bool:
     if report.missing_external:
         return False
     total = len(report.internal)
-    if total and len(report.missing_internal) / total > 0.2:
-        return False
-    return True
+    return not total or len(report.missing_internal) / total <= 0.2
 
 
 def format_missing(report: Report) -> list[str]:
-    out = []
-    for s in report.missing_external:
-        out.append(f"{s.path}:{s.line} {s.name}（对外，缺 docstring）")
-    for s in report.missing_internal:
-        out.append(f"{s.path}:{s.line} {s.name}（内部，缺 docstring）")
+    out = [
+        f"{s.path}:{s.line} {s.name}（对外，缺 docstring）"
+        for s in report.missing_external
+    ]
+    out.extend(
+        f"{s.path}:{s.line} {s.name}（内部，缺 docstring）"
+        for s in report.missing_internal
+    )
     return out
 
 
