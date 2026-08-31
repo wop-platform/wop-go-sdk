@@ -325,6 +325,10 @@ def main():
     ledger_path = here / "feedback-log.jsonl"
     commits = _git_log_commits()
     fbs = _files_by_sha()
+    # 接线（上游 20f6a63 缺陷）：parse_git_log 无 files 字段，files 由
+    # --name-only 侧取——不并入则 feedable_assets/collect_pending 的
+    # c.get("files") 恒空，assets/pending 对任何仓恒空（反哺静默瘫痪）
+    commits = [dict(c, files=fbs.get(c["sha"], ())) for c in commits]
     entries = load_ledger(ledger_path)
     ledger = {e["sha"] for e in entries}
     # patch-id 只为触碰 feedable 资产的提交计算（候选判定必要条件，
