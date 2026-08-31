@@ -1,4 +1,15 @@
 # WOP Go SDK
+[![Go Reference](https://pkg.go.dev/badge/github.com/wop-platform/wop-go-sdk.svg)](https://pkg.go.dev/github.com/wop-platform/wop-go-sdk)
+[![Go Report Card](https://goreportcard.com/badge/github.com/wop-platform/wop-go-sdk)](https://goreportcard.com/report/github.com/wop-platform/wop-go-sdk)
+[![CI](https://github.com/wop-platform/wop-go-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/wop-platform/wop-go-sdk/actions/workflows/ci.yml)
+[![Mutation Gate](https://github.com/wop-platform/wop-go-sdk/actions/workflows/mutation.yml/badge.svg)](https://github.com/wop-platform/wop-go-sdk/actions/workflows/mutation.yml)
+[![Release](https://img.shields.io/github/v/release/wop-platform/wop-go-sdk)](https://github.com/wop-platform/wop-go-sdk/releases)
+[![License: MIT](https://img.shields.io/github/license/wop-platform/wop-go-sdk)](LICENSE)
+
+[![Go 1.27+](https://img.shields.io/badge/go-1.27%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Coverage](https://img.shields.io/badge/coverage-99.1%25-brightgreen)](https://github.com/wop-platform/wop-go-sdk/actions/workflows/ci.yml)
+[![Mutation Kill](https://img.shields.io/badge/mutation_kill-84.9%25%20(%E5%8F%A3%E5%BE%84B)-blueviolet)](https://github.com/wop-platform/wop-specs/pull/5)
+[![Gherkin](https://img.shields.io/badge/bdd-18%20scenarios-orange)](features/wop_gateway.feature)
 ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/wop-platform/wop-go-sdk?utm_source=oss&utm_medium=github&utm_campaign=wop-platform%2Fwop-go-sdk&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 The official Go client library for the WOP gateway (merchant side). It encapsulates the
