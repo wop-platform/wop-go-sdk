@@ -86,6 +86,10 @@ type mutant struct {
 	Col      int      `json:"col"`
 	Desc     string   `json:"desc"`
 	Status   status   `json:"status"`
+	// Diag 为真表示该变异点位于错误构造调用（newError/fuzzyError/
+	// errors.New/fmt.Errorf）的参数内：诊断文案非对外契约（I7），其
+	// LCR 变异不计入击杀率分母（口径B）。
+	Diag bool `json:"diag,omitempty"`
 }
 
 // mutationSite 单点变异：match 判定容器/目标节点，apply 原地改写。
@@ -95,17 +99,20 @@ type mutationSite struct {
 	pos       token.Pos // 报告定位（目标构造处）
 	line, col int
 	desc      string
+	diag      bool // 位于错误构造调用参数内（诊断文案位置）
 	match     func(ast.Node) bool
 	apply     func(ast.Node) bool
 }
 
 func main() {
 	var (
-		outPath  = flag.String("out", "mutation-report.json", "报告输出路径")
-		only     = flag.String("only", "", "仅跑指定文件:行（调试用，如 suite.go:63）")
-		par      = flag.Int("parallel", 4, "并行 worker 数（各持独立副本）")
-		timeout  = flag.Duration("timeout", 180*time.Second, "单变异体测试超时")
-		keepWork = flag.Bool("keep-work", false, "保留工作副本（调试）")
+		outPath   = flag.String("out", "mutation-report.json", "报告输出路径")
+		only      = flag.String("only", "", "仅跑指定文件:行（调试用，如 suite.go:63）")
+		onlyFiles = flag.String("only-files", "", "仅跑指定文件（逗号分隔，增量/CI 用，如 suite.go,keys.go）")
+		par       = flag.Int("parallel", 4, "并行 worker 数（各持独立副本）")
+		timeout   = flag.Duration("timeout", 180*time.Second, "单变异体测试超时")
+		gateB     = flag.Float64("gate-b", 0, "口径B 击杀率门禁（0-1，如 0.80；0=不启用）。口径B 分母剔除错误构造参数内字符串（诊断文案，非契约）的存活变异")
+		keepWork  = flag.Bool("keep-work", false, "保留工作副本（调试）")
 	)
 	flag.Parse()
 
@@ -127,6 +134,14 @@ func main() {
 	if *only != "" {
 		sites = filterOnly(sites, *only)
 		fmt.Printf("only 过滤后 %d 个\n", len(sites))
+	}
+	if *onlyFiles != "" {
+		sites = filterOnlyFiles(sites, strings.Split(*onlyFiles, ","))
+		fmt.Printf("only-files 过滤后 %d 个\n", len(sites))
+	}
+	if len(sites) == 0 {
+		fmt.Println("无变异点，跳过")
+		return
 	}
 
 	// 2. 并发 worker：每 worker 独立副本
@@ -155,7 +170,7 @@ func main() {
 				if err != nil {
 					log.Fatalf("读源文件: %v", err)
 				}
-				m := mutant{Operator: s.op, File: s.file, Line: s.line, Col: s.col, Desc: s.desc}
+				m := mutant{Operator: s.op, File: s.file, Line: s.line, Col: s.col, Desc: s.desc, Diag: s.diag}
 				mutated, err := applyToFile(src, s)
 				if err != nil {
 					m.Status = statusInvalid
@@ -181,9 +196,9 @@ func main() {
 	}
 	close(jobs)
 	wg.Wait()
-
-	// 3. 报告
-	report(results, *outPath)
+	if failed := report(results, *outPath, *gateB); failed {
+		os.Exit(1)
+	}
 }
 
 // ---------- 变异点收集 ----------
@@ -228,11 +243,13 @@ func fileSites(f *ast.File, fset *token.FileSet) []mutationSite {
 		pos := fset.Position(p)
 		return pos.Line, pos.Column
 	}
+	diagPos := diagnosticStringPositions(f)
 	add := func(p token.Pos, op operator, desc string,
 		match func(ast.Node) bool, apply func(ast.Node) bool) {
 		line, col := posOf(p)
+		_, isDiag := diagPos[p]
 		out = append(out, mutationSite{
-			op: op, pos: p, line: line, col: col, desc: desc,
+			op: op, pos: p, line: line, col: col, desc: desc, diag: isDiag,
 			match: match, apply: apply,
 		})
 	}
@@ -489,10 +506,10 @@ func classify(pass bool, output string) status {
 
 // ---------- 报告 ----------
 
-func report(results []mutant, outPath string) {
+func report(results []mutant, outPath string, gateB float64) bool {
 	type agg struct{ k, s, i int }
 	byOp := map[operator]*agg{}
-	var k, s, i int
+	var k, s, i, sDiag int // sDiag：诊断文案位置的存活（口径B 剔除）
 	for _, m := range results {
 		a, ok := byOp[m.Operator]
 		if !ok {
@@ -506,6 +523,9 @@ func report(results []mutant, outPath string) {
 		case statusSurvived:
 			a.s++
 			s++
+			if m.Diag {
+				sDiag++
+			}
 		case statusInvalid:
 			a.i++
 			i++
@@ -522,13 +542,18 @@ func report(results []mutant, outPath string) {
 		a := byOp[op]
 		fmt.Printf("%-6s %-16s %7d %9d %8d\n", op, operatorNames[op], a.k, a.s, a.i)
 	}
-	den := k + s
-	rate := 0.0
-	if den > 0 {
-		rate = float64(k) / float64(den) * 100
+	denA := k + s
+	denB := denA - sDiag
+	rateA, rateB := 0.0, 0.0
+	if denA > 0 {
+		rateA = float64(k) / float64(denA) * 100
 	}
-	fmt.Printf("\n总计: killed=%d survived=%d invalid=%d\n", k, s, i)
-	fmt.Printf("击杀率 = %d/(%d+%d) = %.1f%%（invalid 编译失败不计分母）\n", k, k, s, rate)
+	if denB > 0 {
+		rateB = float64(k) / float64(denB) * 100
+	}
+	fmt.Printf("\n总计: killed=%d survived=%d(其中诊断文案位 %d) invalid=%d\n", k, s, sDiag, i)
+	fmt.Printf("口径A raw 击杀率        = %d/%d = %.1f%%\n", k, denA, rateA)
+	fmt.Printf("口径B 剔诊断文案击杀率  = %d/%d = %.1f%%（invalid 不计分母）\n", k, denB, rateB)
 
 	var survivors []mutant
 	for _, m := range results {
@@ -551,6 +576,63 @@ func report(results []mutant, outPath string) {
 	must(err, "序列化报告")
 	must(os.WriteFile(outPath, data, 0o644), "写报告")
 	fmt.Printf("\n报告已写入 %s\n", outPath)
+	if gateB > 0 {
+		if denB == 0 {
+			fmt.Printf("\n门禁（口径B ≥ %.0f%%）：无有效变异体，门禁跳过\n", gateB*100)
+			return false
+		}
+		if rateB/100 < gateB {
+			fmt.Printf("\n门禁失败（口径B %.1f%% < %.1f%%）\n", rateB, gateB*100)
+			return true
+		}
+		fmt.Printf("\n门禁通过（口径B %.1f%% ≥ %.1f%%）\n", rateB, gateB*100)
+	}
+	return false
+}
+
+// diagnosticStringPositions 收集错误构造调用（newError/fuzzyError/errors.New/
+// fmt.Errorf）参数区内的全部字符串字面量位置——这些字符串是诊断文案
+// （非对外契约，I7），其 LCR 变异按口径B 从分母剔除。
+func diagnosticStringPositions(f *ast.File) map[token.Pos]struct{} {
+	out := map[token.Pos]struct{}{}
+	var callees = map[string]bool{
+		"newError": true, "fuzzyError": true,
+		"errors.New": true, "fmt.Errorf": true, "Errorf": true,
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok || !callees[ident.Name] {
+			return true
+		}
+		for _, arg := range call.Args {
+			ast.Inspect(arg, func(a ast.Node) bool {
+				if lit, ok := a.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					out[lit.Pos()] = struct{}{}
+				}
+				return true
+			})
+		}
+		return false
+	})
+	return out
+}
+
+func filterOnlyFiles(sites []mutationSite, names []string) []mutationSite {
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		set[strings.TrimSpace(filepath.Base(n))] = struct{}{}
+	}
+	var out []mutationSite
+	for _, s := range sites {
+		if _, ok := set[s.file]; ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // ---------- 基础设施 ----------
