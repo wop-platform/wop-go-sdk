@@ -11,6 +11,7 @@
 （conftest 注入 .factory 到 sys.path）
 """
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -496,11 +497,10 @@ class TestCodeupEndpointFallback:
         # 两次都失败才报错；且报错信息指向重试后的端点
         msg = str(e.value)
         hosts = []
-        for tok in msg.split():
-            t = tok.strip("()[]{}<>,;\"'")
-            h = up.urlparse(t if "://" in t else "https://" + t).hostname
-                if h:
-                    hosts.append(h)
+        for u in re.findall(r"https?://[^\s)\]}>\"',;]+", msg):
+            h = up.urlparse(u).hostname
+            if h:
+                hosts.append(h)
         assert "openapi-rdc.aliyuncs.com" in hosts
 
 
