@@ -6,6 +6,16 @@ docstring 归属判定（//、块注释、空行间隔、组注释不覆盖）�
 （对外 100%、内部 80% 含等于边界与空集）、扫描面（git ls-files 枚举与
 排除、fail-closed）、CLI（无参/--json/--self-test/错误参数、exit 码域）。
 """
+# spec:DG-1 对外 API 100% 红线 → 阈值与判定测试(见下方用例)
+# spec:DG-2 内部 ≥80%(空内部集=达标) → 阈值边界测试
+# spec:DG-3 docstring 归属判定(注释形态/空行/组注释不覆盖) → 判定测试
+# spec:DG-4 CLI 无参 exit 0/1 + 逐符号缺失清单 + 统计 → main/CLI 测试
+# spec:DG-5 --self-test 负控制(先红后绿) → self_test 测试
+# spec:DG-6 扫描面 = git ls-files 枚举(反作弊) → 扫描面测试
+# spec:DG-7 factory-local.json docstring_gate_cmd 禁引号/反斜杠 → 上游 test_factory_lib.py TestDocstringGateWords
+# spec:DG-8 defects.json D-xx gate=docstring 击杀 → mutations/defects.json D-01/D-02 PASS
+# spec:DG-10 mutations judge 门域 0/1 → 上游 test_mutations_run.py TestDocstringGateJudge
+
 
 from __future__ import annotations
 
