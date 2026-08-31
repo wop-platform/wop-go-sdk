@@ -1,0 +1,84 @@
+# 变异测试门禁（自研 AST 引擎 tools/mutation，PIT 不支持 Go）。
+#
+# 两个入口：
+#   mutation-diff —— pull_request 触发：仅对 PR 变更的非测试 go 源文件做
+#                    增量变异（-only-files），口径B 击杀率门禁 ≥80%。
+#   mutation-full —— workflow_dispatch 手动触发 + 每周一定时：全量变异，
+#                    口径B 门禁 ≥80%（当前基线 84.9%，2026-08-31）。
+#
+# 口径B：分母剔除「错误构造调用参数内字符串（诊断文案）」的存活变异——
+# 诊断文案非对外契约（spec I7 模糊化纪律），杀文案变异 = 把文案变契约，
+# 反制造脆弱测试。invalid（编译失败）不计分母。
+name: mutation
+
+on:
+  pull_request:
+    paths:
+      - "**.go"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1" # 每周一 03:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: collect changed source files
+        id: changed
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          files=$(git diff --name-only "$base"...HEAD -- '*.go' | grep -v '_test\.go$' | tr '\n' ',' | sed 's/,$//')
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          echo "变更源文件: ${files:-<无>}"
+      - name: mutation diff gate (口径B ≥ 80%)
+        if: steps.changed.outputs.files != ''
+        run: |
+          go run ./tools/mutation \
+            -only-files "${{ steps.changed.outputs.files }}" \
+            -gate-b 0.80 \
+            -parallel 4 \
+            -out mutation-diff-report.json
+      - name: upload report
+        if: always() && steps.changed.outputs.files != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-diff-report
+          path: mutation-diff-report.json
+
+  full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: mutation full gate (口径B ≥ 80%)
+        run: |
+          go run ./tools/mutation \
+            -gate-b 0.80 \
+            -parallel 4 \
+            -out mutation-full-report.json
+      - name: upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-full-report
+          path: mutation-full-report.json

@@ -90,3 +90,45 @@ func TestDefaultTransport_NoBodyNoContentType(t *testing.T) {
 		t.Errorf("无报文请求不应设置 Content-Type，实际 %q", gotCT)
 	}
 }
+
+// OBB signheader.go:52 —— ParseSignHeader 侧 expiredSeconds 恰 86400 合法。
+func TestParseSignHeader_ExpiredSecondsMaxBoundary(t *testing.T) {
+	if _, err := ParseSignHeader("WOP-RSA3072-SHA256 v1/86400/x-wop-a/c2ln"); err != nil {
+		t.Errorf("expiredSeconds=86400 应合法: %v", err)
+	}
+	if _, err := ParseSignHeader("WOP-RSA3072-SHA256 v1/86401/x-wop-a/c2ln"); err == nil {
+		t.Error("expiredSeconds=86401 应拒绝")
+	}
+}
+
+// LCR transport.go:41 —— DefaultTransport 的 BaseURL 尾斜杠归一（双斜杠拼接防护）。
+func TestDefaultTransport_TrailingSlashBaseURL(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	tr := DefaultTransport{HTTPClient: srv.Client(), BaseURL: srv.URL + "/"}
+	if _, err := tr.Send(RequestDraft{Method: "GET", Path: "/v1/orders"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/orders" {
+		t.Errorf("尾斜杠 BaseURL 拼接出 %q（双斜杠未归一）", gotPath)
+	}
+}
+
+// OKN verify.go:59 —— 入向恰 1 字节响应体：digest 必传（D2 无 size 豁免）。
+func TestVerifyResponse_SingleByteBody_RequiresDigest(t *testing.T) {
+	b := newPlatformBuilder(t, "WOP-RSA3072-SHA256")
+	c := verifyClient(t, "WOP-RSA3072-SHA256")
+	h, wire := b.build(t, "POST", "/gateway/x", []byte("x"), Level0, nil)
+	if len(wire) != 1 {
+		t.Fatalf("构造恰 1 字节响应体失败: %d", len(wire))
+	}
+	h.Del(HeaderContentDigest)
+	res := c.VerifyResponse("POST", "/gateway/x", h, wire)
+	if res.OK || res.Code != CodeDigestMismatch {
+		t.Errorf("1 字节响应体缺 digest 应 DIGEST_MISMATCH: ok=%v code=%s", res.OK, res.Code)
+	}
+}
