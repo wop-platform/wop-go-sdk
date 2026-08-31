@@ -11,7 +11,6 @@
 （conftest 注入 .factory 到 sys.path）
 """
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -483,28 +482,19 @@ class TestCodeupEndpointFallback:
             pass
 
         import urllib.error as ue
-        import urllib.parse as up
         monkeypatch.setattr(
             hosting.urllib.request,
             "urlopen",
-            lambda req, timeout=None: _raise(ue.URLError("tls dropped")),
+            lambda req, timeout=None: calls.append(req) or _raise(ue.URLError("tls dropped")),
         )
         monkeypatch.setenv("YUNXIAO_ACCESS_TOKEN", "t")
         monkeypatch.setenv("CODEUP_ORG_ID", "org")
         monkeypatch.setenv("CODEUP_REPO_ID", "42")
         with pytest.raises(hosting.HostingError) as e:
             ad._req("GET", "/oapi/v1/codeup/organizations/org/repositories/42")
-        # 两次都失败才报错；且报错信息指向重试后的端点
-        # 消息格式「codeup 请求不可达（{hostname}）: ...」：主机名为裸 host
-        # 无 scheme，按域名形态提取后补 https:// 经 urlparse 结构化解析；
-        # 相等断言而非子串（防 CodeQL URL 子串告警，误提取 token 不误通过）
-        msg = str(e.value)
-        hosts = []
-        for u in re.findall(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}", msg):
-            h = up.urlparse("https://" + u).hostname
-            if h:
-                hosts.append(h)
-        assert any(h == "openapi-rdc.aliyuncs.com" for h in hosts)
+        # 两次都失败才报错；直接断言重试（第二次）传给 urlopen 的 URL 主机名
+        # == RDC：不依赖错误消息格式，也不受消息中形似主机名的 token 干扰
+        assert calls[-1].host == "openapi-rdc.aliyuncs.com"
 
 
 class TestCli:
