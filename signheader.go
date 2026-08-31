@@ -69,6 +69,7 @@ func ParseSignHeader(header string) (signHeader, error) {
 	}, nil
 }
 
+// parseSignedHeaders 解析 signedHeaders 段：分号切分、TrimSpace、lowercase、去空。
 func parseSignedHeaders(raw string) []string {
 	parts := strings.Split(raw, ";")
 	out := make([]string, 0, len(parts))

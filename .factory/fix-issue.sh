@@ -174,7 +174,6 @@ run_triage() {  # 物理隔离裁决器：--no-tools --no-session，输入全部
   if [ "${DRY}" = 1 ]; then
     echo "    [dry-run] omp_node <prompts/triage.md + 内联 MISSION/issue 标题正文> --no-tools --config .factory/omp-isolated.yml --max-time $(node_timeout triage)"
     echo "    产物: ${DIR}/triage.(json|log)"
-    echo "    [提示] DRY 不执行 triage 裁决，预判请用 bash .factory/dry-triage.sh <issue-number>..."
     return 0
   fi
   local mission title body cmts prompt
@@ -309,7 +308,7 @@ if [ "${DRY}" = 0 ]; then
     fi
     mkdir -p "${REPO}/.factory/locks"
     # issue 值加引号：Codeup 编号是字符串（KFPT-18），%s 裸出产出
-    # {"issue": KFPT-18} 非法 JSON，jq 消费方崩（gtsp-wop-gateway 实测）
+    # {"issue": KFPT-18} 非法 JSON，jq 消费方崩（下游仓实测）
     printf '{"ts": "%s", "issue": "%s", "round": %s, "type": "%s", "exit": %s, "secs": %s}\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ISSUE}" "${ROUND}" "${kind}" "${rc}" \
       "$(( $(date +%s) - CHAIN_T0 ))" >> "${REPO}/.factory/locks/ledger.jsonl"

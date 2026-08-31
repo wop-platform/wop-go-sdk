@@ -14,7 +14,9 @@ import (
 type Level string
 
 const (
+	// Level0 明文级别（L0）：不上数字信封，报文原样传输。
 	Level0 Level = "L0"
+	// Level2 全文数字信封级别（L2）：随机 CEK + GCM 加密全文，CEK 经平台公钥包装。
 	Level2 Level = "L2"
 )
 
@@ -248,6 +250,7 @@ func (c *Client) sealEnvelope(plaintext []byte, random io.Reader) (wireBody []by
 	return wireBody, buildEncryptHeader(wrapped), nil
 }
 
+// sortStrings 原地升序排序 signedHeaders（小规模专用，见内注释）。
 func sortStrings(s []string) {
 	// 小切片插入排序足够（元素个数 ≤ 6）
 	for i := 1; i < len(s); i++ {

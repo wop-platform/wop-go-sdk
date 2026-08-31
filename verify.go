@@ -129,6 +129,7 @@ func (c *Client) verify(method, path string, header http.Header, wireBody []byte
 	return VerifyResult{OK: true, Plaintext: plaintext}
 }
 
+// containsHeader 判定 target 是否在 signedHeaders 清单中（重放/签名范围核对）。
 func containsHeader(names []string, target string) bool {
 	for _, n := range names {
 		if n == target {

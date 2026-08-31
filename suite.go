@@ -6,7 +6,9 @@ import "strings"
 type Family string
 
 const (
+	// FamilyRSA 国际算法体系族（RSA/SHA-256 生产线）。
 	FamilyRSA Family = "RSA"
+	// FamilySM2 国密算法体系族（SM2/SM3/SM4 生产线）。
 	FamilySM2 Family = "SM2"
 )
 

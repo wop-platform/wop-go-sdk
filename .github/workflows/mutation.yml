@@ -30,7 +30,7 @@ jobs:
   diff:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,6 +51,7 @@ jobs:
         run: |
           go run ./tools/mutation \
             -only-files "${{ steps.changed.outputs.files }}" \
+            -semantic \
             -gate-b 0.80 \
             -parallel 4 \
             -out mutation-diff-report.json

@@ -12,6 +12,7 @@ import (
 // IV 12B，tag 128bit；密文线上格式 = ciphertext‖tag 尾部拼接（D10/F4），
 // 整体 base64url 无填充。解密失败对外模糊（I7）。
 
+// gcmIVLen GCM 标准 IV 长度（12 字节，NIST SP 800-38D 推荐值）。
 const gcmIVLen = 12
 
 // sealMessage 以给定 key/iv 加密明文，返回 ciphertext‖tag。
@@ -43,6 +44,7 @@ func openMessage(s Suite, ciphertext, key, iv []byte) ([]byte, error) {
 	return plain, nil
 }
 
+// newMessageGCM 按套件族构造报文 AEAD：SM2 族 → SM4-GCM，RSA 族 → AES-256-GCM。
 func newMessageGCM(s Suite, key []byte) (cipher.AEAD, error) {
 	want := s.cekLen()
 	if len(key) != want {

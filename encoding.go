@@ -9,6 +9,7 @@ import (
 // 线上编码契约（spec §3.4 / D10）：二进制一律 base64url 无填充，
 // 严格模式拒收 '=' 与标准字母表字符；十六进制统一小写。
 
+// b64urlEncoder 线上 base64url 无填充编码器（D10 单例，严格字母表由解码侧强制）。
 var b64urlEncoder = base64.RawURLEncoding
 
 // EncodeB64URL 编码为 base64url 无填充。
@@ -45,6 +46,7 @@ func TrimAll(s string) string {
 	return s
 }
 
+// collapseWhitespace 单趟折叠：连续空白（空格/\t/\n/\x0B/\f/\r）压成单个空格。
 func collapseWhitespace(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -83,6 +85,7 @@ func URLEncodeJava(s string) string {
 	return b.String()
 }
 
+// hexUpperTable 字节 → 两位大写 hex 查表（URLEncodeJava 的 %XX 直出，零分配）。
 var hexUpperTable = [256]string{
 	"00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "0A", "0B", "0C", "0D", "0E", "0F",
 	"10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "1A", "1B", "1C", "1D", "1E", "1F",

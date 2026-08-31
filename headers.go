@@ -2,12 +2,18 @@ package wop
 
 // 协议 Header 名称（x-wop- 前缀，与网关 GatewayConstants 对齐）。
 const (
-	HeaderAppKey        = "x-wop-appkey"
-	HeaderSign          = "x-wop-sign"
+	// HeaderAppKey 应用唯一标识头。
+	HeaderAppKey = "x-wop-appkey"
+	// HeaderSign 结构化签名头。
+	HeaderSign = "x-wop-sign"
+	// HeaderContentDigest 报文摘要头。
 	HeaderContentDigest = "x-wop-content-digest"
-	HeaderTimestamp     = "x-wop-timestamp"
-	HeaderNonce         = "x-wop-nonce"
-	HeaderEncrypt       = "x-wop-encrypt"
+	// HeaderTimestamp 请求时间戳头。
+	HeaderTimestamp = "x-wop-timestamp"
+	// HeaderNonce 防重放随机数头。
+	HeaderNonce = "x-wop-nonce"
+	// HeaderEncrypt L2 数字信封元数据头。
+	HeaderEncrypt = "x-wop-encrypt"
 )
 
 // 签名协议常量（spec §7 / 网关 GatewayConstants）。
