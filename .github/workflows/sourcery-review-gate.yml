@@ -1,12 +1,17 @@
 name: sourcery-review-gate
 
-# 合并门禁：sourcery review 存在未解决 issue 时禁止合并（评论清零契约的自动化形态）。
-# sourcery-ai[bot] 评论与 CLI 同引擎同规则；修复后 push 触发重跑，绿 = 可合并。
+# 合并门禁：sourcery review 存在未解决 issue 时禁止合并（"评论清零"契约的自动化形态）。
+# - 规则保留清单在 .sourcery.yaml（评审确认的 disable 项），本 job 与 sourcery-ai[bot] 同配置
+# - 只扫 PR 变更文件；有 issue → exit 1 → 合并保护拦截；修复后 push 自动重跑，绿 = 可合并
+# - 清零判定不用评论状态：GitHub 会把已修复评论的 thread 自动重新锚定（position 恒非 null，
+#   commit_id 甚至跟随到新 head），无法区分已修复/未修复；CLI --check 与 bot 同引擎同配置，
+#   输出即当前 head 的真值。pull_request_review_comment 事件：sourcery 评论/回复到达时立即重估。
 # 前提：仓库需配置 SOURCERY_TOKEN secret（sourcery.ai 账号 token），否则本 job 显式失败。
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
   workflow_dispatch:
 
 permissions:
@@ -35,4 +40,10 @@ jobs:
           fi
           BASE="${{ github.event.pull_request.base.ref }}"
           git fetch origin "$BASE" --quiet
-          sourcery review --check --diff "git diff origin/$BASE...HEAD"
+          FILES=$(git diff --name-only "origin/$BASE...HEAD" \
+            | grep -E '\.(py|go|java|cs|php|ts|js)$' || true)
+          if [ -z "$FILES" ]; then
+            echo "无语言文件变更，gate 通过。"
+            exit 0
+          fi
+          sourcery review --check $FILES
