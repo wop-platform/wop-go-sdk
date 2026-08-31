@@ -66,13 +66,11 @@ def evidence_suites(changed_files: list[str]) -> list[str]:
     """
     suites = set()
     for f in changed_files:
-        m = re.match(r"(backend|frontend)/", f)
-        if m:
-            suites.add(m.group(1))
+        if m := re.match(r"(backend|frontend)/", f):
+            suites.add(m[1])
             continue
-        m = re.match(r"(skills/[^/]+)/", f)
-        if m:
-            suites.add(f"{m.group(1)}/scripts")
+        if m := re.match(r"(skills/[^/]+)/", f):
+            suites.add(f"{m[1]}/scripts")
     return sorted(suites)
 
 
@@ -81,7 +79,7 @@ def breaker_check(floor: dict, entries: list[dict], today: str) -> None:
 
     streak 跨全部历史条目（不只当日）：连续失败是状态不是流量。
     """
-    runs = sum(1 for e in entries if str(e.get("ts", ""))[:10] == today)
+    runs = sum(str(e.get("ts", ""))[:10] == today for e in entries)
     streak = 0
     for e in entries:
         streak = streak + 1 if e.get("exit") != 0 else 0
@@ -98,8 +96,7 @@ def _load_ledger(path: str) -> list[dict]:
     ledger = Path(path)
     if ledger.exists():
         for line in ledger.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
+            if line := line.strip():
                 entries.append(json.loads(line))
     return entries
 
@@ -126,8 +123,8 @@ def node_metric_line(node: str, t0: int, now: int, status: str) -> str:
     node_timeout 同款）；渲染契约与消费端（report）同模块，drift 即测试红。
     """
     return json.dumps(
-        {"node": node, "secs": int(now) - int(t0), "status": status},
-        ensure_ascii=False)
+        {"node": node, "secs": now - t0, "status": status}, ensure_ascii=False
+    )
 
 
 def node_timeout(name: str, env: dict | None = None) -> str:
@@ -180,9 +177,7 @@ def classify_task(files: list[str]) -> str:
         return "doc"
     if not src and not md:
         return "test"
-    if md:  # md 与任何代码（含测试）并存
-        return "mixed"
-    return "code"
+    return "mixed" if md else "code"
 
 
 # 工厂本地化配置（M4 + 拆分前置 ADR-009）：guard.py / 链脚本 / prompts 的
@@ -256,6 +251,25 @@ def final_gate_cmd() -> str:
     return v
 
 
+def docstring_gate_cmd() -> str | None:
+    """docstring 门命令（可选键，缺省不启用；取值见 factory-local.json）。
+
+    与 final_gate_cmd 同构但为**可选**门：键缺失/不存在 → 返回 None（链脚本
+    跳过，仓库无 docstring 门）；键存在 → 语义与 final_gate_cmd 完全一致
+    （非空字符串 + 禁引号 + 禁反斜杠，fail-closed：配置损坏即 RuntimeError，
+    禁止静默降级为无门）。对外 API 100% 可文档化 + 内部 API ≥80% 的阈值由
+    各仓检查器自定（语言 AST 异构，不在此数据化），本键只承载命令。
+    """
+    if "docstring_gate_cmd" not in _LOCAL_CFG:
+        return None
+    v = _local_str("docstring_gate_cmd")
+    if "'" in v or '"' in v:
+        raise RuntimeError("docstring_gate_cmd 禁含引号（read -r -a 与 shlex 拆词一致性）")
+    if "\\" in v:
+        raise RuntimeError("docstring_gate_cmd 禁含反斜杠（shlex 转义与 read -r 字面语义分叉，ADR-010）")
+    return v
+
+
 def repo_vars_text() -> str:
     """拼进工作节点 prompt 的「仓库参数」段（prompts 零宿主专名的注入面）。
 
@@ -270,18 +284,14 @@ def repo_vars_text() -> str:
         f"- 审查依据目录: {_local_str('review_basis')}",
         f"- final_gate 命令: {final_gate_cmd()}",
     ]
+    if (dg := docstring_gate_cmd()) is not None:
+        lines.append(f"- docstring 门命令: {dg}")
     if "pr_review_skills" in _LOCAL_CFG:
         # 键存在即严格校验（与 local-list 同规）：值损坏 fail-closed；
         # 键缺失 = 本仓无守卫技能面（如纯后端仓），合法省略该行。
         skills = _local_str_list("pr_review_skills")
         lines.append(f"- 守卫技能（PR 评审选配面）: {'、'.join(skills)}")
     return "\n".join(lines)
-
-# ═════════════════════════════════════════════════════════════════════
-# 上游分发清单展开（2026-08-28 自 sync-from-upstream.sh 内嵌 heredoc 下沉，
-# 铁律 4：git 子进程编排归 Python；曾处 killpg 门[只扫 *.py]与 pipe 门
-# [只扫 *.sh]的双盲缝隙）
-# ═════════════════════════════════════════════════════════════════════
 
 
 def dist_manifest_lines(up: str, sha: str) -> list[str]:
@@ -293,8 +303,10 @@ def dist_manifest_lines(up: str, sha: str) -> list[str]:
     版本旧，返回空（调用方全部按 local 报告）。local 是 {路径: 理由}。
     """
     out = subprocess.run(
-        ["git", "-C", up, "show", "%s:.factory/DISTRIBUTION.json" % sha],
-        capture_output=True, text=True)
+        ["git", "-C", up, "show", f"{sha}:.factory/DISTRIBUTION.json"],
+        capture_output=True,
+        text=True,
+    )
     if out.returncode != 0:
         print("警告: 上游无 DISTRIBUTION.json（版本旧），全部按 local 报告",
               file=sys.stderr)
@@ -306,12 +318,21 @@ def dist_manifest_lines(up: str, sha: str) -> list[str]:
         if entry.endswith("/"):
             # 目录项（如 tests/）递归展开为文件项
             r = subprocess.run(
-                ["git", "-C", up, "ls-tree", "-r", "--name-only",
-                 sha, ".factory/" + entry],
-                capture_output=True, text=True)
+                [
+                    "git",
+                    "-C",
+                    up,
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    sha,
+                    f".factory/{entry}",
+                ],
+                capture_output=True,
+                text=True,
+            )
             if not r.stdout.strip():
-                print("  [%s] %s: 目录在上游不存在（上游整目录已删？清单待退役甄别）"
-                      % (kind, entry), file=sys.stderr)
+                print(f"  [{kind}] {entry}: 目录在上游不存在（上游整目录已删？清单待退役甄别）", file=sys.stderr)
             for line in r.stdout.splitlines():
                 lines.append("%s\t%s" % (kind, line[len(".factory/"):]))
         else:
@@ -402,7 +423,7 @@ def reject_receipt(triage: dict) -> str:
             continue                # 不让回执阶段崩掉整条链的评论
         m = re.match(r"^判据([abc])[:：]", r)
         if m and ("不通过" in r or "存疑" in r):
-            failed.add(m.group(1))
+            failed.add(m[1])
     lines += ["", "**重投指引**：不同意裁决可补充上下文后重开，下一轮 triage 全新评估。针对未通过判据："]
     lines += [f"- {REJECT_GUIDANCE[k]}" for k in sorted(failed)] or [
         "- 对照 MISSION.md「Triage 判据」逐条补足 issue 上下文。"
@@ -662,24 +683,26 @@ def _issue_in_progress(cfg: _DispatchCfg, n: int) -> bool:
         return False
 
 
-def dispatch_round(cfg: _DispatchCfg) -> int:
-    """单轮：breaker 门 → sync → triage 批次 → PR 结果 → needs-fix 重派 →
-    accepted 队列 → 等链收尾 sync → rejected 对账 → M2 上游同步检查。
-    唯一非零返回 = 熔断/门故障透传码（watch 循环据此一并停摆）。"""
-    print(f"=== dispatch @ {datetime.datetime.now():%H:%M:%S} ===")
-    # R4 成本熔断：每轮派发前检查（DRY 干跑无副作用不检查）。透传 breaker.sh
-    # 退出码（3=熔断；1=floor 缺失/损坏 fail-closed）。锁路径对齐硬锁：
-    # git-common-dir 锚定主树，worktree 内启动也能读到主台账。
-    if not cfg.dry:
-        rc = subprocess.run(["bash", str(cfg.factory / "breaker.sh"),
-                             str(cfg.main_factory / "locks")]).returncode
-        if rc != 0:
-            return rc
+def _run_breaker_gate(cfg: _DispatchCfg) -> int:
+    """R4 成本熔断：每轮派发前检查（DRY 干跑无副作用不检查）。透传 breaker.sh
+    退出码（3=熔断；1=floor 缺失/损坏 fail-closed）。锁路径对齐硬锁：
+    git-common-dir 锚定主树，worktree 内启动也能读到主台账。"""
+    if cfg.dry:
+        return 0
+    return subprocess.run(["bash", str(cfg.factory / "breaker.sh"),
+                           str(cfg.main_factory / "locks")]).returncode
+
+
+def _run_state_sync(cfg: _DispatchCfg) -> None:
+    """轮首全量 state 快照（factory-state.sh sync --all）。"""
     cfg.say("sync: factory-state.sh sync --all")
     if not cfg.dry:
         subprocess.run(["bash", str(cfg.factory / "factory-state.sh"),
                         "sync", "--all"])
 
+
+def _triage_batch(cfg: _DispatchCfg) -> None:
+    """零标签 issue 裁决批次（triage-batch.sh）；失败不阻断派发。"""
     print("-- triage 批次（零标签 issue 裁决；失败不阻断派发） --")
     if cfg.dry:
         cfg.say("triage-batch: 零 factory 标签 issue，≤MAX_TRIAGE 个")
@@ -687,8 +710,10 @@ def dispatch_round(cfg: _DispatchCfg) -> int:
         rc = subprocess.run(["bash", str(cfg.factory / "triage-batch.sh")]).returncode
         print(f"-- triage 批次结束（exit={rc}） --")
 
+
+def _handle_approved_prs(cfg: _DispatchCfg) -> None:
+    """approved：sync 已打好标签；此处只做 A5 门内的 merge 动作。"""
     print("-- PR 结果处理（优先） --")
-    # approved：sync 已打好标签；此处只做 A5 门内的 merge 动作
     for num, mergeable in approved_prs(_hosting_json(
             cfg, "pr list(approved)",
             lambda: cfg.adapter.pr_list(state="open", label="factory:approved",
@@ -702,6 +727,9 @@ def dispatch_round(cfg: _DispatchCfg) -> int:
         else:
             print(f"  PR #{num} approved 但 A5 门未开（FACTORY_AUTO_MERGE + metrics/auto-merge-unlocked）→ 人工合并")
 
+
+def _redispatch_needs_fix(cfg: _DispatchCfg) -> None:
+    """needs-fix PR → 关联 issue 重派（remove needs-fix 保计数活性）。"""
     print("-- needs-fix 重派（计数契约：claim 时移除 needs-fix） --")
     # 计数契约：重派必须 remove factory:needs-fix——label 事件只在添加时
     # 触发，标签滞留则 state.py 轮次计数冻结（test_state.py 有边界测试）
@@ -727,6 +755,9 @@ def dispatch_round(cfg: _DispatchCfg) -> int:
         if _claim(cfg, int(n)):
             cfg.pool.spawn(int(n))
 
+
+def _drain_accepted_queue(cfg: _DispatchCfg) -> None:
+    """accepted 队列按 priority 排序消费 → 派链（并发 ≤ max_parallel）。"""
     print(f"-- accepted 队列（priority 排序，并发 ≤{cfg.max_parallel}） --")
     for n in sort_by_priority(_hosting_json(
             cfg, "issue list(accepted)",
@@ -739,15 +770,20 @@ def dispatch_round(cfg: _DispatchCfg) -> int:
             cfg.say(f"issue #{n} → 链")
             cfg.pool.spawn(n)
 
+
+def _final_sync(cfg: _DispatchCfg) -> None:
+    """等链收尾：本轮链全部退出后再次全量 state sync。"""
     if not cfg.dry:
         cfg.pool.wait_all()
         print("本轮链全部结束，收尾 sync")
         subprocess.run(["bash", str(cfg.factory / "factory-state.sh"),
                         "sync", "--all"])
 
-    # ── rejected 存量对账（reject→人工闭环缺口，2026-08-23 审计）───────
-    # 只报告不动作（铁律 4）：有 reject 后人工评论的 → 提示复核关闭；
-    # 零评论的 → 静默滞留计数。关闭决策永远归人类。
+
+def _reconcile_rejected(cfg: _DispatchCfg) -> None:
+    """rejected 存量对账（reject→人工闭环缺口，2026-08-23 审计）。
+    只报告不动作（铁律 4）：有 reject 后人工评论的 → 提示复核关闭；
+    零评论的 → 静默滞留计数。关闭决策永远归人类。"""
     for r in rejected_reconcile(_hosting_json(
             cfg, "issue list(rejected)",
             lambda: cfg.adapter.issue_list(state="open", label="factory:rejected",
@@ -758,10 +794,12 @@ def dispatch_round(cfg: _DispatchCfg) -> int:
         else:
             print(f"  [rejected] #{r['number']} 静默滞留（无后续人工评论，{t}）")
 
-    # ── M2 上游同步检查（设计 §11.2）：零 LLM、不占 R4 预算 ─────────────
-    # 不复用 fix-issue 链（guard PERIMETER 含 .factory/，链按设计拦工具链
-    # 自变更）；exit 0 = 同步已推进 → 当轮即止（自我指涉护栏：后续派发仍跑
-    # 内存旧脚本，下一轮生效）；1/2/3 不阻断本轮派发。
+
+def _upstream_sync_check(cfg: _DispatchCfg) -> int:
+    """M2 上游同步检查（设计 §11.2）：零 LLM、不占 R4 预算。
+    不复用 fix-issue 链（guard PERIMETER 含 .factory/，链按设计拦工具链
+    自变更）；exit 0 = 同步已推进 → 当轮即止（自我指涉护栏：后续派发仍跑
+    内存旧脚本，下一轮生效）；1/2/3 不阻断本轮派发。"""
     check = cfg.factory / "upstream-sync-check.sh"
     if os.access(check, os.X_OK) and (cfg.factory / "upstream-lock.json").is_file():
         if subprocess.run(["bash", str(check)]).returncode == 0:
@@ -771,11 +809,28 @@ def dispatch_round(cfg: _DispatchCfg) -> int:
     return 0
 
 
-def dispatch_main(args: list[str]) -> int:
-    """dispatch.sh shim 的实现体。CLI/env 契约与 bash 版逐项等价：
-    --dry-run（DRY=1 同义，2026-08-21 事故教训：两者都认）/ --watch /
-    --interval N（INTERVAL 环境变量同义，默认 300s：链首 triage 批次 30s
-    级、全链分钟级，30min 轮询让新 issue 平均等 15min）。"""
+def dispatch_round(cfg: _DispatchCfg) -> int:
+    """单轮：breaker 门 → sync → triage 批次 → PR 结果 → needs-fix 重派 →
+    accepted 队列 → 等链收尾 sync → rejected 对账 → M2 上游同步检查。
+    唯一非零返回 = 熔断/门故障透传码（watch 循环据此一并停摆）。"""
+    print(f"=== dispatch @ {datetime.datetime.now():%H:%M:%S} ===")
+    rc = _run_breaker_gate(cfg)  # R4 熔断门：非零透传，watch 停摆
+    if rc != 0:
+        return rc
+    _run_state_sync(cfg)
+    _triage_batch(cfg)
+    _handle_approved_prs(cfg)
+    _redispatch_needs_fix(cfg)
+    _drain_accepted_queue(cfg)
+    _final_sync(cfg)
+    _reconcile_rejected(cfg)
+    return _upstream_sync_check(cfg)
+
+
+def _parse_dispatch_args(args: list[str]) -> tuple[bool, float, bool]:
+    """CLI/env 参数解析 → (watch, interval, dry)。--dry-run（DRY=1 同义，
+    2026-08-21 事故教训：两者都认）/ --watch / --interval N（INTERVAL 环境
+    变量同义，默认 300s）。"""
     watch = False
     interval = float(os.environ.get("INTERVAL") or 300)
     dry = os.environ.get("DRY", "0") == "1"
@@ -790,6 +845,29 @@ def dispatch_main(args: list[str]) -> int:
             interval = float(args[i + 1])
             i += 1
         i += 1
+    return watch, interval, dry
+
+
+def _run_dispatch_loop(cfg: _DispatchCfg, watch: bool, interval: float) -> int:
+    """watch 常驻循环 / 单轮执行；非零 rc 透传（watch 一并停摆）。"""
+    if watch:
+        while True:
+            rc = dispatch_round(cfg)
+            if rc != 0:
+                return rc  # 熔断/门故障：watch 一并停摆（bash exit $? 语义）
+            time.sleep(interval)
+    rc = dispatch_round(cfg)
+    if not cfg.dry:
+        print("提示: --watch 常驻（或 cron */30 调用单轮）")
+    return rc
+
+
+def dispatch_main(args: list[str]) -> int:
+    """dispatch.sh shim 的实现体。CLI/env 契约与 bash 版逐项等价：
+    --dry-run（DRY=1 同义，2026-08-21 事故教训：两者都认）/ --watch /
+    --interval N（INTERVAL 环境变量同义，默认 300s：链首 triage 批次 30s
+    级、全链分钟级，30min 轮询让新 issue 平均等 15min）。"""
+    watch, interval, dry = _parse_dispatch_args(args)
     # MAX_PARALLEL 配置错误 fail-fast（PR #53 审查②）：0/负/非整数值会让
     # ChainPool 槽满等待永久为真——挂起而非报错。config-error = 退出码 2。
     # 前置于 git/gh/slug 环境探测：纯 env 校验与仓库环境无关，配置错误
@@ -841,22 +919,9 @@ def dispatch_main(args: list[str]) -> int:
         # EXIT trap 对应物：TERM/HUP → SystemExit 走 finally 放锁
         signal.signal(sig, lambda s, _f: sys.exit(128 + int(s)))
     try:
-        if watch:
-            while True:
-                rc = dispatch_round(cfg)
-                if rc != 0:
-                    return rc  # 熔断/门故障：watch 一并停摆（bash exit $? 语义）
-                time.sleep(interval)
-        rc = dispatch_round(cfg)
-        if not cfg.dry:
-            print("提示: --watch 常驻（或 cron */30 调用单轮）")
-        return rc
+        return _run_dispatch_loop(cfg, watch, interval)
     finally:
-        # 先收尸再放锁（PR #53 审查④）：孤儿链在锁释放后仍跑，会与新
-        # dispatcher 并发；TERM/HUP → SystemExit 走到此，正常路径此处
-        # 已被 wait_all 收空，shutdown 为空操作。
-        stuck = cfg.pool.shutdown()
-        if stuck:
+        if stuck := cfg.pool.shutdown():
             print(f"  [warn] {len(stuck)} 条链未限期退出已 SIGKILL: {stuck}",
                   file=sys.stderr)
         release_dispatch_lock(lock_dir)
@@ -937,8 +1002,14 @@ def main(argv: list[str]) -> int:
             print(s)
         return 0
     if cmd == "final-gate":
-        # final-gate —— 确定性测试门命令（ADR-009 数据化；链脚本 read -ra 拆词执行）
+        # final-gate —— 确定性测试门命令（ADR-009 唯一取值口；fix-issue.sh
+        # / validate-pr.sh read -ra 拆词执行；配置损坏 fail-closed 非零终止）
         print(final_gate_cmd())
+        return 0
+    if cmd == "docstring-gate":
+        # docstring-gate —— docstring 门命令（可选键；空输出=未启用，链脚本跳过）
+        if (v := docstring_gate_cmd()) is not None:
+            print(v)
         return 0
     if cmd == "local-str":
         # local-str <key> —— 单字符串键输出（feedback-upstream 上游指针等；ADR-009）
