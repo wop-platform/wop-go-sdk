@@ -498,8 +498,7 @@ class TestCodeupEndpointFallback:
         hosts = []
         for tok in msg.split():
             t = tok.strip("()[]{}<>,;\"'")
-            if "://" in t:
-                h = up.urlparse(t).hostname
+            h = up.urlparse(t if "://" in t else "https://" + t).hostname
                 if h:
                     hosts.append(h)
         assert "openapi-rdc.aliyuncs.com" in hosts
