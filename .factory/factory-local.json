@@ -26,6 +26,7 @@
     "b": "判据b（可判定）：把完成标准写成可机械验证的形式——验收 = 具体测试的断言（go test 中的测试函数名、逐条清单、file:line 级差异），避免「持续 / 优化 / 修收」类开放措辞；doc-only（纯文档）改动在验证门零投影——补可断言测试或转人工 MR；",
     "c": "判据c（不触周界）：触及 PERIMETER 的部分拆成独立 issue 走人类 PR（清单见 MISSION.md；安全敏感面 signature/digest/encoding/keyencrypt/sm2raw/keys/signheader/canonical/verify 与向量真源 internal/ 默认全锁）；"
   },
+  "port_point": "a482c37",
   "repo_identity": "wop-go-sdk",
   "reading_scopes": [
     "README.md",
