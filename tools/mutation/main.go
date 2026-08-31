@@ -132,6 +132,7 @@ func main() {
 		par       = flag.Int("parallel", 4, "并行 worker 数（各持独立副本）")
 		timeout   = flag.Duration("timeout", 180*time.Second, "单变异体测试超时")
 		gateB     = flag.Float64("gate-b", 0, "口径B 击杀率门禁（0-1，如 0.80；0=不启用）。口径B 分母剔除错误构造参数内字符串（诊断文案，非契约）的存活变异")
+		semantic  = flag.Bool("semantic", false, "增量模式语义过滤：与 git 基准（origin/main）比对 AST 规范化源（无注释），语义未变的文件跳过变异（纯 docstring/空白变更零成本放行）")
 		keepWork  = flag.Bool("keep-work", false, "保留工作副本（调试）")
 	)
 	flag.Parse()
@@ -156,7 +157,12 @@ func main() {
 		fmt.Printf("only 过滤后 %d 个\n", len(sites))
 	}
 	if *onlyFiles != "" {
-		sites = filterOnlyFiles(sites, strings.Split(*onlyFiles, ","))
+		names := strings.Split(*onlyFiles, ",")
+		if *semantic {
+			names = filterSemanticUnchanged(names)
+			fmt.Printf("semantic 过滤后 %d 个文件待变异\n", len(names))
+		}
+		sites = filterOnlyFiles(sites, names)
 		fmt.Printf("only-files 过滤后 %d 个\n", len(sites))
 	}
 	if len(sites) == 0 {
@@ -706,6 +712,54 @@ func copyModule(src, dst string) error {
 		}
 		return os.WriteFile(filepath.Join(dst, rel), data, info.Mode())
 	})
+}
+
+// normalizedSource 返回无注释的 AST 规范化源（parse 不带 ParseComments），
+// 用于语义等价比对：docstring/空白/注释变更不影响输出。
+func normalizedSource(filename string, src []byte) (string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filename, src, parser.SkipObjectResolution)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := printer.Fprint(&buf, fset, f); err != nil {
+		return "", err
+	}
+	// printer 保留原始列对齐 hint（等宽空格差异会误报语义变更），
+	// 二次 gofmt 消除对齐噪声后才是稳定规范化形。
+	out, err := gofmt(buf.Bytes())
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// filterSemanticUnchanged 剔除与 git 基准（origin/main:file）AST 语义等价的
+// 文件；基准不存在的文件（新增）保守保留。
+func filterSemanticUnchanged(names []string) []string {
+	var out []string
+	for _, n := range names {
+		n = strings.TrimSpace(filepath.Base(n))
+		cur, err := os.ReadFile(n)
+		if err != nil {
+			out = append(out, n) // 读不到当前版：保守保留
+			continue
+		}
+		baseOut, err := exec.Command("git", "show", "origin/main:"+n).Output()
+		if err != nil {
+			out = append(out, n) // 基准无此文件或 git 失败：新增/未知，保留
+			continue
+		}
+		a, errA := normalizedSource(n, baseOut)
+		b, errB := normalizedSource(n, cur)
+		if errA != nil || errB != nil || a != b {
+			out = append(out, n) // 语义有变或无法判定：保留
+			continue
+		}
+		fmt.Printf("  semantic: %s 与基准语义等价（纯注释/空白变更），跳过\n", n)
+	}
+	return out
 }
 
 // gofmt 对重写后的源码过一遍标准格式化（printer 输出对齐）。
