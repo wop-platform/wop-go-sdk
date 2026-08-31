@@ -495,13 +495,16 @@ class TestCodeupEndpointFallback:
         with pytest.raises(hosting.HostingError) as e:
             ad._req("GET", "/oapi/v1/codeup/organizations/org/repositories/42")
         # 两次都失败才报错；且报错信息指向重试后的端点
+        # 消息格式「codeup 请求不可达（{hostname}）: ...」：主机名为裸 host
+        # 无 scheme，按域名形态提取后补 https:// 经 urlparse 结构化解析；
+        # 相等断言而非子串（防 CodeQL URL 子串告警，误提取 token 不误通过）
         msg = str(e.value)
         hosts = []
-        for u in re.findall(r"https?://[^\s)\]}>\"',;]+", msg):
-            h = up.urlparse(u).hostname
+        for u in re.findall(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}", msg):
+            h = up.urlparse("https://" + u).hostname
             if h:
                 hosts.append(h)
-        assert "openapi-rdc.aliyuncs.com" in hosts
+        assert any(h == "openapi-rdc.aliyuncs.com" for h in hosts)
 
 
 class TestCli:
