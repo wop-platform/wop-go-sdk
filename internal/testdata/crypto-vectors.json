@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "spec": "docs/crypto-strategy-spec.md v0.3-reviewed（附录 B.2 / D9）",
+    "spec": "crypto/crypto-strategy-spec.md v0.4-draft（附录 B.2 / D9）",
     "generated": "2026-08-28",
     "testOnly": true,
     "note": "全部密钥/k/IV 为 TEST-ONLY；固定 IV 仅为字节级断言，生产违反不变式 I4",
