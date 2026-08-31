@@ -82,7 +82,7 @@ func (b *platformResponseBuilder) build(t *testing.T, method, path string, plain
 		}
 	}
 	canonical := CanonicalRequest("v1/1800", method, path, "", CanonicalHeaders(signedMap))
-	sig, err := signMessage(suite, &privKey{rsa: b.platformPrivR, sm2: b.platformPrivS}, []byte(canonical), rnd)
+	sig, err := signMessage(suite, &privKey{rsa: b.platformPrivR, sm2: b.platformPrivS}, sm2PlatformUserID, []byte(canonical), rnd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestVerifyResponse_MissingSignHeader(t *testing.T) {
 	c := verifyClient(t, "WOP-RSA3072-SHA256")
 	h := http.Header{}
 	res := c.VerifyResponse("POST", "/p", h, []byte("body"))
-	if res.OK || res.Code != CodeProtocol {
+	if res.OK || res.Code != CodeParse {
 		t.Errorf("缺 sign 头: ok=%v code=%s", res.OK, res.Code)
 	}
 }
@@ -143,7 +143,7 @@ func TestVerifyResponse_TamperedSignature_Fuzzy(t *testing.T) {
 	h.Set(HeaderSign, replaced)
 
 	res := c.VerifyResponse("POST", "/p", h, wire)
-	if res.OK || res.Code != CodeVerifyFailed || res.Reason != verifyFuzzyMessage {
+	if res.OK || res.Code != CodeSignature || res.Reason != verifyFuzzyMessage {
 		t.Errorf("I2/I7: ok=%v code=%s reason=%q", res.OK, res.Code, res.Reason)
 	}
 }
@@ -156,7 +156,7 @@ func TestVerifyResponse_TamperedBody_DigestMismatch(t *testing.T) {
 	wire = append(append([]byte{}, wire...), 'x') // 中间人追加字节
 
 	res := c.VerifyResponse("POST", "/p", h, wire)
-	if res.OK || res.Code != CodeDigestMismatch {
+	if res.OK || res.Code != CodeIntegrity {
 		t.Errorf("F6: ok=%v code=%s（应先于解密失败暴露 digest 不匹配）", res.OK, res.Code)
 	}
 }
@@ -182,12 +182,12 @@ func TestVerifyResponse_AlgMismatchBeforeDecrypt(t *testing.T) {
 	signed := map[string]string{HeaderNonce: "n1", HeaderTimestamp: "1755900000000",
 		HeaderContentDigest: h.Get(HeaderContentDigest), HeaderEncrypt: h.Get(HeaderEncrypt)}
 	canonical := CanonicalRequest("v1/1800", "POST", "/p", "", CanonicalHeaders(signed))
-	sig, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, []byte(canonical), rnd)
+	sig, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, sm2PlatformUserID, []byte(canonical), rnd)
 	h.Set(HeaderSign, buildSignHeader(suite.SecurityReq(), 1800,
 		[]string{HeaderContentDigest, HeaderEncrypt, HeaderNonce, HeaderTimestamp}, sig))
 
 	res := c.VerifyResponse("POST", "/p", h, wire)
-	if res.OK || res.Code != CodeAlgMismatch {
+	if res.OK || res.Code != CodeConsistency {
 		t.Errorf("I3: ok=%v code=%s reason=%s（应先于解密暴露族不符）", res.OK, res.Code, res.Reason)
 	}
 }
@@ -210,7 +210,7 @@ func TestVerifyResponse_GCMFailure_Fuzzy(t *testing.T) {
 	})
 	// build 内 tamper 在 digest 计算前执行，digest/签名覆盖篡改后密文 → 全链合法但解密失败
 	res := c.VerifyResponse("POST", "/p", h, wire)
-	if res.OK || res.Code != CodeDecryptFailed || res.Reason != decryptFuzzyMessage {
+	if res.OK || res.Code != CodeDecrypt || res.Reason != decryptFuzzyMessage {
 		t.Errorf("F6/I7: ok=%v code=%s reason=%q", res.OK, res.Code, res.Reason)
 	}
 }
@@ -233,7 +233,7 @@ func TestVerifyResponse_DEKUnwrapFailure_Fuzzy(t *testing.T) {
 		return w
 	})
 	res := c.VerifyResponse("POST", "/p", h, wire)
-	if res.OK || res.Code != CodeDecryptFailed {
+	if res.OK || res.Code != CodeDecrypt {
 		t.Errorf("DEK 解包失败: ok=%v code=%s", res.OK, res.Code)
 	}
 }
@@ -256,7 +256,7 @@ func TestVerifyResponse_DigestNotSigned_Reject(t *testing.T) {
 	h.Set(HeaderSign, buildSignHeader(parsed.securityReq, parsed.expiredSeconds, without, parsed.signature))
 
 	res := c.VerifyResponse("POST", "/p", h, wire)
-	if res.OK || res.Code != CodeProtocol {
+	if res.OK || res.Code != CodeParse {
 		t.Errorf("I1: ok=%v code=%s", res.OK, res.Code)
 	}
 }
@@ -269,7 +269,7 @@ func TestVerifyResponse_D2Rules(t *testing.T) {
 	h, wire := b.build(t, "POST", "/p", []byte("body"), Level0, nil)
 	h.Del(HeaderContentDigest)
 	res := c.VerifyResponse("POST", "/p", h, wire)
-	if res.OK || res.Code != CodeDigestMismatch {
+	if res.OK || res.Code != CodeIntegrity {
 		t.Errorf("缺 digest: ok=%v code=%s", res.OK, res.Code)
 	}
 
@@ -277,7 +277,7 @@ func TestVerifyResponse_D2Rules(t *testing.T) {
 	h2, wire2 := b.build(t, "POST", "/p", nil, Level0, nil)
 	h2.Set(HeaderContentDigest, DigestHeaderValue(mustSuite(t, "WOP-RSA3072-SHA256"), nil))
 	res = c.VerifyResponse("POST", "/p", h2, wire2)
-	if res.OK || res.Code != CodeProtocol {
+	if res.OK || res.Code != CodeParse {
 		t.Errorf("无 body 带 digest: ok=%v code=%s", res.OK, res.Code)
 	}
 }
@@ -291,7 +291,7 @@ func TestVerifyResponse_MiscProtocolErrors(t *testing.T) {
 	sig := h.Get(HeaderSign)
 	h.Set(HeaderSign, "WOP-SM2-SM3"+sig[len("WOP-RSA3072-SHA256"):])
 	res := c.VerifyResponse("POST", "/p", h, wire)
-	if res.OK || res.Code != CodeProtocol {
+	if res.OK || res.Code != CodeParse {
 		t.Errorf("套件不符: ok=%v code=%s", res.OK, res.Code)
 	}
 
@@ -299,7 +299,7 @@ func TestVerifyResponse_MiscProtocolErrors(t *testing.T) {
 	h, _ = b.build(t, "POST", "/p", []byte("x"), Level0, nil)
 	h.Set(HeaderSign, "GARBAGE "+h.Get(HeaderSign)[len("WOP-RSA3072-SHA256")+1:])
 	res = c.VerifyResponse("POST", "/p", h, []byte("x"))
-	if res.OK || res.Code != CodeProtocol {
+	if res.OK || res.Code != CodeParse {
 		t.Errorf("垃圾套件: ok=%v code=%s", res.OK, res.Code)
 	}
 
@@ -310,7 +310,7 @@ func TestVerifyResponse_MiscProtocolErrors(t *testing.T) {
 		append(append([]string{}, parsed.signedHeaders...), "x-wop-missing"), parsed.signature))
 	h.Del(HeaderNonce)
 	res = c.VerifyResponse("POST", "/p", h, []byte("x"))
-	if res.OK || res.Code != CodeProtocol {
+	if res.OK || res.Code != CodeParse {
 		t.Errorf("缺失已签名头: ok=%v code=%s", res.OK, res.Code)
 	}
 }
@@ -325,7 +325,7 @@ func TestVerifyCallback_URLPathExtraction(t *testing.T) {
 	}
 	// 错误路径（canonical path 不符）→ 验签失败
 	res = c.VerifyCallback("https://merchant.example.com/other/path", h, wire)
-	if res.OK || res.Code != CodeVerifyFailed {
+	if res.OK || res.Code != CodeSignature {
 		t.Errorf("错误路径应验签失败: ok=%v code=%s", res.OK, res.Code)
 	}
 	// 非法回调 URL

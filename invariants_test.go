@@ -69,45 +69,45 @@ func TestInvariantNegativeBranchMatrix(t *testing.T) {
 		code  ErrorCode
 		check func() error
 	}{
-		{"D2-1", CodeProtocol, func() error {
+		{"D2-1", CodeParse, func() error {
 			return ValidateContentDigestHeader(rsaSuite, "")
 		}},
-		{"D2-3", CodeProtocol, func() error {
+		{"D2-3", CodeParse, func() error {
 			return ValidateContentDigestHeader(rsaSuite, "sha-256  "+strings.Repeat("a", 64))
 		}},
-		{"D2-4", CodeProtocol, func() error {
+		{"D2-4", CodeParse, func() error {
 			return ValidateContentDigestHeader(rsaSuite, "sha-256 "+strings.Repeat("A", 64))
 		}},
-		{"I5-digest", CodeProtocol, func() error {
+		{"I5-digest", CodeParse, func() error {
 			return ValidateContentDigestHeader(rsaSuite, "sm3 "+strings.Repeat("a", 64))
 		}},
-		{"I5-suite", CodeSuiteUnsupported, func() error {
+		{"I5-suite", CodeConfiguration, func() error {
 			_, err := ParseSuite("WOP-RSA3072-SM3")
 			return err
 		}},
-		{"F7-1-63B", CodeProtocol, func() error {
+		{"F7-1-63B", CodeParse, func() error {
 			return verifyMessage(sm2Suite, sm2Pub, msg, sm2Sig[:84])
 		}},
-		{"F7-1-65B", CodeProtocol, func() error {
+		{"F7-1-65B", CodeParse, func() error {
 			return verifyMessage(sm2Suite, sm2Pub, msg, "AA"+sm2Sig)
 		}},
-		{"F7-3-RSA错长", CodeProtocol, func() error {
+		{"F7-3-RSA错长", CodeParse, func() error {
 			return verifyMessage(rsaSuite, rsaPub, msg, EncodeB64URL(make([]byte, 383)))
 		}},
-		{"F7-2-b64=", CodeProtocol, func() error {
+		{"F7-2-b64=", CodeParse, func() error {
 			_, err := DecodeB64URL("abc=")
 			return err
 		}},
-		{"F7-2-b64+", CodeProtocol, func() error {
+		{"F7-2-b64+", CodeParse, func() error {
 			_, err := DecodeB64URL("ab+c")
 			return err
 		}},
-		{"D9-2-DER签名", CodeProtocol, func() error {
+		{"D9-2-DER签名", CodeParse, func() error {
 			// DER SEQUENCE 编码的签名长度必 > 64B
 			der := append([]byte{0x30, 0x44, 0x02, 0x20}, mustDecodeB64u(t, sm2Sig)...)
 			return verifyMessage(sm2Suite, sm2Pub, msg, EncodeB64URL(der))
 		}},
-		{"D9-1-C1C2C3", CodeDecryptFailed, func() error {
+		{"D9-1-C1C2C3", CodeDecrypt, func() error {
 			for _, ke := range v.KeyEncrypt {
 				if ke.ID == "sm2-encrypt-c1c2c3-mismatch" {
 					_, err := unwrapDEKPayload(sm2Suite, &privKey{sm2: mustSM2Priv(t, v.Keys.SM2.PrivateDB64)}, ke.CipherB64u)
@@ -116,7 +116,7 @@ func TestInvariantNegativeBranchMatrix(t *testing.T) {
 			}
 			return nil
 		}},
-		{"F2-MGF1SHA1", CodeDecryptFailed, func() error {
+		{"F2-MGF1SHA1", CodeDecrypt, func() error {
 			for _, ke := range v.KeyEncrypt {
 				if ke.ID == "oaep3072-mgf1sha1-trap" {
 					priv, _ := parseRSAPrivateKey(v.Keys.RSA3072.PrivatePkcs8B64)
@@ -126,7 +126,7 @@ func TestInvariantNegativeBranchMatrix(t *testing.T) {
 			}
 			return nil
 		}},
-		{"I7-1", CodeVerifyFailed, func() error {
+		{"I7-1", CodeSignature, func() error {
 			return verifyMessage(sm2Suite, &pubKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}, []byte("篡改消息"), sm2Sig)
 		}},
 	}
@@ -147,21 +147,21 @@ func TestInvariantNegativeBranchMatrix(t *testing.T) {
 	}
 
 	// I7 模糊文案钉死
-	we := fuzzyError(CodeVerifyFailed)
+	we := fuzzyError(CodeSignature)
 	if we.Message != verifyFuzzyMessage {
 		t.Errorf("I7-1 文案漂移：%q", we.Message)
 	}
-	we = fuzzyError(CodeDecryptFailed)
+	we = fuzzyError(CodeDecrypt)
 	if we.Message != decryptFuzzyMessage {
 		t.Errorf("I7-2 文案漂移：%q", we.Message)
 	}
 	// verifyFail 兜底（非 wop.Error 内部错误 → 配置类收敛）
 	res := verifyFail(errors.New("boom"))
-	if res.OK || res.Code != CodeConfig {
+	if res.OK || res.Code != CodeConfiguration {
 		t.Errorf("verifyFail 兜底: %+v", res)
 	}
 	// Error() 文案
-	if msg := (&Error{Code: CodeConfig, Message: "x"}).Error(); !strings.Contains(msg, "[CONFIG]") {
+	if msg := (&Error{Code: CodeConfiguration, Message: "x"}).Error(); !strings.Contains(msg, "[configuration]") {
 		t.Errorf("Error() = %q", msg)
 	}
 }
@@ -173,7 +173,7 @@ func TestCoverageGap_KeyFamilyMismatch(t *testing.T) {
 	// SM2 套件 + RSA 材料 / RSA 套件 + SM2 材料（NewClient 全部 4 个解析失败分支）
 	cfg := testConfig(t, "WOP-SM2-SM3")
 	cfg.MerchantPrivateKey = v.Keys.RSA3072.PrivatePkcs8B64
-	if _, err := NewClient(cfg); err == nil || err.(*Error).Code != CodeConfig {
+	if _, err := NewClient(cfg); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("SM2 套件+RSA 私钥: %v", err)
 	}
 	cfg = testConfig(t, "WOP-SM2-SM3")
@@ -194,7 +194,7 @@ func TestCoverageGap_KeyFamilyMismatch(t *testing.T) {
 	// 平台公钥位数不符（3072 套件 + 4096 平台公钥）
 	cfg = testConfig(t, "WOP-RSA3072-SHA256")
 	cfg.PlatformPublicKey = v.Keys.RSA4096.PublicSpkiB64
-	if _, err := NewClient(cfg); err == nil || err.(*Error).Code != CodeConfig {
+	if _, err := NewClient(cfg); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("平台公钥位数: %v", err)
 	}
 }
@@ -208,7 +208,7 @@ func TestCoverageGap_FailingRandomSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = client.BuildRequest("POST", "/p", []byte("b"), Level0, WithRandom(&failReader{}))
-	if err == nil || err.(*Error).Code != CodeConfig {
+	if err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("nonce 失败: %v", err)
 	}
 	// CEK 失败（reader 只剩 16B）
@@ -232,7 +232,7 @@ func TestCoverageGap_FailingRandomSources(t *testing.T) {
 
 	// 底层 sm2Sign / sm2Encrypt 随机源失败
 	priv := mustSM2Priv(t, v.Keys.SM2.PrivateDB64)
-	if _, err := sm2Sign(priv, sm2DefaultUserID, []byte("m"), nil, &failReader{}); err == nil {
+	if _, err := sm2Sign(priv, sm2PlatformUserID, []byte("m"), nil, &failReader{}); err == nil {
 		t.Error("sm2Sign 随机失败应报错")
 	}
 	if _, err := sm2Encrypt(&priv.PublicKey, []byte("m"), nil, &failReader{}); err == nil {
@@ -245,30 +245,30 @@ func TestCoverageGap_NilKeyConfigErrors(t *testing.T) {
 	sm2Suite := mustSuite(t, "WOP-SM2-SM3")
 
 	// 签名层：族不匹配的空密钥位
-	if _, err := signMessage(sm2Suite, &privKey{}, []byte("m"), nil); err == nil || err.(*Error).Code != CodeConfig {
+	if _, err := signMessage(sm2Suite, &privKey{}, nil, []byte("m"), nil); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("SM2 缺私钥: %v", err)
 	}
-	if _, err := signMessage(rsaSuite, &privKey{}, []byte("m"), nil); err == nil || err.(*Error).Code != CodeConfig {
+	if _, err := signMessage(rsaSuite, &privKey{}, nil, []byte("m"), nil); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("RSA 缺私钥: %v", err)
 	}
-	if err := verifyMessage(sm2Suite, &pubKey{}, []byte("m"), strings.Repeat("A", 86)); err == nil || err.(*Error).Code != CodeConfig {
+	if err := verifyMessage(sm2Suite, &pubKey{}, []byte("m"), strings.Repeat("A", 86)); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("SM2 缺公钥: %v", err)
 	}
-	if err := verifyMessage(rsaSuite, &pubKey{}, []byte("m"), strings.Repeat("A", 512)); err == nil || err.(*Error).Code != CodeConfig {
+	if err := verifyMessage(rsaSuite, &pubKey{}, []byte("m"), strings.Repeat("A", 512)); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("RSA 缺公钥: %v", err)
 	}
 
 	// DEK 层
-	if _, err := wrapDEKPayload(sm2Suite, &pubKey{}, []byte("p"), nil); err == nil || err.(*Error).Code != CodeConfig {
+	if _, err := wrapDEKPayload(sm2Suite, &pubKey{}, []byte("p"), nil); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("SM2 缺包装公钥: %v", err)
 	}
-	if _, err := wrapDEKPayload(rsaSuite, &pubKey{}, []byte("p"), nil); err == nil || err.(*Error).Code != CodeConfig {
+	if _, err := wrapDEKPayload(rsaSuite, &pubKey{}, []byte("p"), nil); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("RSA 缺包装公钥: %v", err)
 	}
-	if _, err := unwrapDEKPayload(sm2Suite, &privKey{}, "QUJD"); err == nil || err.(*Error).Code != CodeConfig {
+	if _, err := unwrapDEKPayload(sm2Suite, &privKey{}, "QUJD"); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("SM2 缺解包私钥: %v", err)
 	}
-	if _, err := unwrapDEKPayload(rsaSuite, &privKey{}, "QUJD"); err == nil || err.(*Error).Code != CodeConfig {
+	if _, err := unwrapDEKPayload(rsaSuite, &privKey{}, "QUJD"); err == nil || err.(*Error).Code != CodeConfiguration {
 		t.Errorf("RSA 缺解包私钥: %v", err)
 	}
 }
@@ -282,7 +282,7 @@ func TestCoverageGap_OAPEPPayloadTooLong(t *testing.T) {
 	}
 	// OAEP 最大明文 k-2h-2 = 384-64-2 = 318B；319B 必失败 → 模糊
 	_, err := wrapDEKPayload(rsaSuite, pub, make([]byte, 319), nil)
-	if err == nil || err.(*Error).Code != CodeDecryptFailed {
+	if err == nil || err.(*Error).Code != CodeDecrypt {
 		t.Errorf("超长 DEK 载荷: %v", err)
 	}
 }
@@ -364,11 +364,11 @@ func TestCoverageGap_VerifyL2Malformed(t *testing.T) {
 		signed := map[string]string{HeaderNonce: "n1", HeaderTimestamp: "1755900000000",
 			HeaderContentDigest: h.Get(HeaderContentDigest), HeaderEncrypt: h.Get(HeaderEncrypt)}
 		canonical := CanonicalRequest("v1/1800", "POST", "/p", "", CanonicalHeaders(signed))
-		sig, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, []byte(canonical), rnd)
+		sig, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, sm2PlatformUserID, []byte(canonical), rnd)
 		h.Set(HeaderSign, buildSignHeader(suite.SecurityReq(), 1800,
 			[]string{HeaderContentDigest, HeaderEncrypt, HeaderNonce, HeaderTimestamp}, sig))
 		res := c.VerifyResponse("POST", "/p", h, wire)
-		if res.OK || res.Code == CodeVerifyFailed || res.Code == CodeDigestMismatch {
+		if res.OK || res.Code == CodeSignature || res.Code == CodeIntegrity {
 			t.Errorf("%s: ok=%v code=%s（应为协议/解密类）", name, res.OK, res.Code)
 		}
 	}
@@ -387,11 +387,11 @@ func TestCoverageGap_VerifyL2Malformed(t *testing.T) {
 	signed := map[string]string{HeaderNonce: "n1", HeaderTimestamp: "1755900000000",
 		HeaderContentDigest: h.Get(HeaderContentDigest), HeaderEncrypt: h.Get(HeaderEncrypt)}
 	canonical := CanonicalRequest("v1/1800", "POST", "/p", "", CanonicalHeaders(signed))
-	sig, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, []byte(canonical), rnd)
+	sig, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, sm2PlatformUserID, []byte(canonical), rnd)
 	h.Set(HeaderSign, buildSignHeader(suite.SecurityReq(), 1800,
 		[]string{HeaderContentDigest, HeaderEncrypt, HeaderNonce, HeaderTimestamp}, sig))
-	if res := c.VerifyResponse("POST", "/p", h, wire); res.OK || res.Code != CodeDecryptFailed {
-		t.Errorf("畸形 dek 载荷（合同 n13）: ok=%v code=%s, want DECRYPT_FAILED", res.OK, res.Code)
+	if res := c.VerifyResponse("POST", "/p", h, wire); res.OK || res.Code != CodeDecrypt {
+		t.Errorf("畸形 dek 载荷（合同 n13）: ok=%v code=%s, want decrypt", res.OK, res.Code)
 	}
 
 	// x-wop-encrypt 头本身非法
@@ -407,12 +407,12 @@ func TestCoverageGap_VerifyL2Malformed(t *testing.T) {
 			}
 		}
 		can := CanonicalRequest(parsed.authString(), "POST", "/p", "", CanonicalHeaders(sm))
-		sig2, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, []byte(can), deterministicReader())
+		sig2, _ := signMessage(suite, &privKey{sm2: b.platformPrivS}, sm2PlatformUserID, []byte(can), deterministicReader())
 		hh.Set(HeaderSign, buildSignHeader(suite.SecurityReq(), parsed.expiredSeconds, parsed.signedHeaders, sig2))
 	}
 	h2.Set(HeaderEncrypt, "malformed")
 	resign(h2)
-	if res := c.VerifyResponse("POST", "/p", h2, wire2); res.OK || res.Code != CodeProtocol {
+	if res := c.VerifyResponse("POST", "/p", h2, wire2); res.OK || res.Code != CodeParse {
 		t.Errorf("非法 encrypt 头: ok=%v code=%s", res.OK, res.Code)
 	}
 }
@@ -511,7 +511,7 @@ func TestCoverageGap_RetryAndFixedKValidation(t *testing.T) {
 	savedSign, savedEnc := sm2SignRetries, sm2EncryptRetries
 	sm2SignRetries, sm2EncryptRetries = 0, 0
 	defer func() { sm2SignRetries, sm2EncryptRetries = savedSign, savedEnc }()
-	if _, err := sm2Sign(priv, sm2DefaultUserID, []byte("m"), nil, nil); err == nil {
+	if _, err := sm2Sign(priv, sm2PlatformUserID, []byte("m"), nil, nil); err == nil {
 		t.Error("签名重试耗尽应报错")
 	}
 	if _, err := sm2Encrypt(pub, []byte("m"), nil, nil); err == nil {
@@ -521,7 +521,7 @@ func TestCoverageGap_RetryAndFixedKValidation(t *testing.T) {
 
 	// 固定 k 范围校验（k=0 与 k=n）
 	for _, bad := range []*big.Int{big.NewInt(0), new(big.Int).Set(sm2CurveN())} {
-		if _, err := sm2Sign(priv, sm2DefaultUserID, []byte("m"), bad, nil); err == nil {
+		if _, err := sm2Sign(priv, sm2PlatformUserID, []byte("m"), bad, nil); err == nil {
 			t.Error("非法固定 k 签名应报错")
 		}
 		if _, err := sm2Encrypt(pub, []byte("m"), bad, nil); err == nil {
@@ -552,8 +552,8 @@ func TestCoverageGap_TinyRSAKeySignFails(t *testing.T) {
 		t.Skipf("256 位 RSA 密钥生成失败: %v", err)
 	}
 	// SHA256 摘要超出小模数签名能力 → SignPKCS1v15 失败 → 模糊
-	_, err = signMessage(mustSuite(t, "WOP-RSA3072-SHA256"), &privKey{rsa: tiny}, []byte("m"), nil)
-	if err == nil || err.(*Error).Code != CodeVerifyFailed {
+	_, err = signMessage(mustSuite(t, "WOP-RSA3072-SHA256"), &privKey{rsa: tiny}, nil, []byte("m"), nil)
+	if err == nil || err.(*Error).Code != CodeSignature {
 		t.Errorf("小密钥签名应模糊失败: %v", err)
 	}
 }
@@ -567,12 +567,12 @@ func TestCoverageGap_GarbageSM2PublicKeyBase64(t *testing.T) {
 func TestCoverageGap_DigestFormatAtValidateAndBrokenRSAKey(t *testing.T) {
 	// ValidateContentDigest 层直接吃到格式非法值（管线外调用）
 	rsaSuite := mustSuite(t, "WOP-RSA3072-SHA256")
-	if err := ValidateContentDigest(rsaSuite, "garbage", []byte("b")); err == nil || err.(*Error).Code != CodeProtocol {
+	if err := ValidateContentDigest(rsaSuite, "garbage", []byte("b")); err == nil || err.(*Error).Code != CodeParse {
 		t.Errorf("格式非法应拒绝: %v", err)
 	}
 	// 损坏 RSA 密钥（N=1）→ SignPKCS1v15 失败 → 模糊
 	broken := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: big.NewInt(1), E: 3}, D: big.NewInt(1)}
-	if _, err := signMessage(rsaSuite, &privKey{rsa: broken}, []byte("m"), nil); err == nil || err.(*Error).Code != CodeVerifyFailed {
+	if _, err := signMessage(rsaSuite, &privKey{rsa: broken}, nil, []byte("m"), nil); err == nil || err.(*Error).Code != CodeSignature {
 		t.Errorf("损坏密钥签名应模糊失败: %v", err)
 	}
 }

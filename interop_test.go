@@ -71,15 +71,16 @@ func loadInteropFixture(t *testing.T) *interopFixtureT {
 // classOf 将本仓错误码映射到跨仓规范分类（wop-specs/interop/v1 合同）。
 func classOf(c ErrorCode) string {
 	switch c {
-	case CodeVerifyFailed:
+	case CodeSignature:
 		return "verify-failed"
-	case CodeDecryptFailed:
+	case CodeDecrypt:
 		return "decrypt-failed"
-	case CodeDigestMismatch:
+	case CodeIntegrity:
 		return "digest-mismatch"
-	case CodeAlgMismatch:
+	case CodeConsistency:
 		return "alg-mismatch"
 	default:
+		// CodeParse → protocol；CodeConfiguration/CodeUnsupported 无 canonical 对应（配置类非协议类），interop 负样本不触发。
 		return "protocol"
 	}
 }

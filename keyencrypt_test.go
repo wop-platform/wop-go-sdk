@@ -82,8 +82,8 @@ func TestWrapUnwrapDEK_Roundtrip(t *testing.T) {
 	// 带填充符 b64url 拒绝（协议类）
 	if _, err := unwrapDEKPayload(sm2Suite, sm2Priv, "BHg6d-mt="); err == nil {
 		t.Error("带 = 的 dek 密文应拒绝")
-	} else if err.(*Error).Code != CodeProtocol {
-		t.Errorf("错误类 = %s, want CodeProtocol", err.(*Error).Code)
+	} else if err.(*Error).Code != CodeParse {
+		t.Errorf("错误类 = %s, want CodeParse", err.(*Error).Code)
 	}
 }
 
@@ -102,7 +102,7 @@ func TestUnwrapDEK_FuzzyOnFailure(t *testing.T) {
 	if uerr == nil {
 		t.Fatal("不配对密钥应解包失败")
 	}
-	if we := uerr.(*Error); we.Code != CodeDecryptFailed || we.Message != decryptFuzzyMessage {
+	if we := uerr.(*Error); we.Code != CodeDecrypt || we.Message != decryptFuzzyMessage {
 		t.Errorf("I7 违规：code=%s msg=%q", we.Code, we.Message)
 	}
 }
@@ -160,7 +160,7 @@ func TestOpenMessage_RoundtripAndTamper(t *testing.T) {
 		_, err = openMessage(suite, bad, key, iv)
 		if err == nil {
 			t.Errorf("%s 篡改 tag 应失败", me.ID)
-		} else if we := err.(*Error); we.Code != CodeDecryptFailed || we.Message != decryptFuzzyMessage {
+		} else if we := err.(*Error); we.Code != CodeDecrypt || we.Message != decryptFuzzyMessage {
 			t.Errorf("%s I7 违规：code=%s msg=%q", me.ID, we.Code, we.Message)
 		}
 
@@ -227,8 +227,8 @@ func TestParseDekPayload_Rejects(t *testing.T) {
 	for name, s := range reject {
 		if _, err := parseDekPayload(s); err == nil {
 			t.Errorf("%s (%q) 应拒绝", name, s)
-		} else if we, ok := err.(*Error); !ok || we.Code != CodeProtocol {
-			t.Errorf("%s: 错误类 = %v, want CodeProtocol", name, err)
+		} else if we, ok := err.(*Error); !ok || we.Code != CodeParse {
+			t.Errorf("%s: 错误类 = %v, want CodeParse", name, err)
 		}
 	}
 }

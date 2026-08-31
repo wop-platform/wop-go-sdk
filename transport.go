@@ -41,12 +41,12 @@ func (t DefaultTransport) Send(d RequestDraft) (TransportResponse, error) {
 	target := strings.TrimRight(t.BaseURL, "/") + d.Path
 	parsed, err := url.Parse(target)
 	if err != nil || !parsed.IsAbs() {
-		return TransportResponse{}, newError(CodeConfig, "请求地址非法：%s", target)
+		return TransportResponse{}, newError(CodeConfiguration, "请求地址非法：%s", target)
 	}
 
 	req, err := http.NewRequest(d.Method, target, bytes.NewReader(d.WireBody))
 	if err != nil {
-		return TransportResponse{}, newError(CodeConfig, "构建 HTTP 请求失败：%v", err)
+		return TransportResponse{}, newError(CodeConfiguration, "构建 HTTP 请求失败：%v", err)
 	}
 	for name, value := range d.Headers {
 		req.Header.Set(name, value)
@@ -57,16 +57,16 @@ func (t DefaultTransport) Send(d RequestDraft) (TransportResponse, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return TransportResponse{}, newError(CodeConfig, "HTTP 发送失败：%v", err)
+		return TransportResponse{}, newError(CodeConfiguration, "HTTP 发送失败：%v", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return TransportResponse{}, newError(CodeConfig, "读取响应体失败：%v", err)
+		return TransportResponse{}, newError(CodeConfiguration, "读取响应体失败：%v", err)
 	}
 	if len(body) > maxResponseBytes {
-		return TransportResponse{}, newError(CodeProtocol, "响应体超过 %d 字节上限", maxResponseBytes)
+		return TransportResponse{}, newError(CodeParse, "响应体超过 %d 字节上限", maxResponseBytes)
 	}
 	return TransportResponse{StatusCode: resp.StatusCode, Headers: resp.Header, Body: body}, nil
 }

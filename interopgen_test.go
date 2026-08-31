@@ -278,7 +278,7 @@ func interopPlatformSign(t *testing.T, v *goldenVectors, suiteID, canonical, kSe
 	suite := mustSuite(t, suiteID)
 	if suite.IsSM2() {
 		priv := mustSM2Priv(t, v.Keys.SM2.PrivateDB64)
-		sig, err := sm2Sign(priv, sm2DefaultUserID, []byte(canonical), interopFixedSM2K(kSeed), nil)
+		sig, err := sm2Sign(priv, sm2PlatformUserID, []byte(canonical), interopFixedSM2K(kSeed), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -292,7 +292,7 @@ func interopPlatformSign(t *testing.T, v *goldenVectors, suiteID, canonical, kSe
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig, err := signMessage(suite, &privKey{rsa: priv}, []byte(canonical), nil)
+	sig, err := signMessage(suite, &privKey{rsa: priv}, sm2PlatformUserID, []byte(canonical), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

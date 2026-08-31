@@ -29,36 +29,36 @@ func (p signHeader) authString() string {
 func ParseSignHeader(header string) (signHeader, error) {
 	trimmed := strings.TrimSpace(header)
 	if trimmed == "" {
-		return signHeader{}, newError(CodeProtocol, "缺少 x-wop-sign 头")
+		return signHeader{}, newError(CodeParse, "缺少 x-wop-sign 头")
 	}
 	sp := strings.IndexByte(trimmed, ' ')
 	if sp <= 0 {
-		return signHeader{}, newError(CodeProtocol, "x-wop-sign 格式错误：缺少 securityReq 与 authString 的空格分隔")
+		return signHeader{}, newError(CodeParse, "x-wop-sign 格式错误：缺少 securityReq 与 authString 的空格分隔")
 	}
 	securityReq := trimmed[:sp]
 	// 签名为 base64url（无 '/'），SplitN 4 段安全
 	seg := strings.SplitN(strings.TrimSpace(trimmed[sp+1:]), "/", 4)
 	if len(seg) != 4 {
-		return signHeader{}, newError(CodeProtocol,
+		return signHeader{}, newError(CodeParse,
 			"x-wop-sign 格式错误：应为 <protocolVersion>/<expiredSeconds>/<signedHeaders>/<signature>")
 	}
 	if seg[0] != SignProtocolVersion {
-		return signHeader{}, newError(CodeProtocol, "不支持的签名协议版本 %q", seg[0])
+		return signHeader{}, newError(CodeParse, "不支持的签名协议版本 %q", seg[0])
 	}
 	expiredSeconds, err := strconv.ParseInt(seg[1], 10, 64)
 	if err != nil {
-		return signHeader{}, newError(CodeProtocol, "expiredSeconds 非法 %q", seg[1])
+		return signHeader{}, newError(CodeParse, "expiredSeconds 非法 %q", seg[1])
 	}
 	if expiredSeconds <= 0 || expiredSeconds > SignExpiredSecondsMax {
-		return signHeader{}, newError(CodeProtocol, "expiredSeconds 超出允许范围 (0, %d]",
+		return signHeader{}, newError(CodeParse, "expiredSeconds 超出允许范围 (0, %d]",
 			SignExpiredSecondsMax)
 	}
 	signedHeaders := parseSignedHeaders(seg[2])
 	if len(signedHeaders) == 0 {
-		return signHeader{}, newError(CodeProtocol, "signedHeaders 为空")
+		return signHeader{}, newError(CodeParse, "signedHeaders 为空")
 	}
 	if strings.TrimSpace(seg[3]) == "" {
-		return signHeader{}, newError(CodeProtocol, "signature 为空")
+		return signHeader{}, newError(CodeParse, "signature 为空")
 	}
 	return signHeader{
 		securityReq:     securityReq,
@@ -101,11 +101,11 @@ func parseEncryptHeader(value string) (level string, dekB64u string, err error) 
 	v := strings.TrimSpace(value)
 	const prefix = "L2;dek="
 	if !strings.HasPrefix(v, prefix) || len(v) <= len(prefix) {
-		return "", "", newError(CodeProtocol, "x-wop-encrypt 须为 L2;dek=<base64url>")
+		return "", "", newError(CodeParse, "x-wop-encrypt 须为 L2;dek=<base64url>")
 	}
 	dek := v[len(prefix):]
 	if !isStrictB64URLChars(dek) {
-		return "", "", newError(CodeProtocol, "x-wop-encrypt dek 段须为 base64url 无填充")
+		return "", "", newError(CodeParse, "x-wop-encrypt dek 段须为 base64url 无填充")
 	}
 	return "L2", dek, nil
 }
@@ -138,10 +138,10 @@ func wrapEncryptedBody(cipherB64u string) []byte {
 func extractEncryptedBody(wireBody []byte) (string, error) {
 	var env encryptedEnvelope
 	if err := json.Unmarshal(wireBody, &env); err != nil {
-		return "", newError(CodeProtocol, "L2 请求体不是合法 JSON 信封")
+		return "", newError(CodeParse, "L2 请求体不是合法 JSON 信封")
 	}
 	if env.Encrypted == "" {
-		return "", newError(CodeProtocol, "L2 请求体缺少 encrypted 密文字段")
+		return "", newError(CodeParse, "L2 请求体缺少 encrypted 密文字段")
 	}
 	return env.Encrypted, nil
 }

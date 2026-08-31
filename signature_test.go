@@ -30,7 +30,7 @@ func TestSignMessage_RSAVectors_ByteLevel(t *testing.T) {
 		if priv.rsa, err = parseRSAPrivateKey(tc.privKey); err != nil {
 			t.Fatalf("%s 私钥: %v", tc.suiteID, err)
 		}
-		sig, err := signMessage(suite, priv, msg, nil)
+		sig, err := signMessage(suite, priv, nil, msg, nil)
 		if err != nil {
 			t.Fatalf("%s 签名: %v", tc.suiteID, err)
 		}
@@ -58,7 +58,7 @@ func TestSignVerifyMessage_SM2Roundtrip(t *testing.T) {
 	pub := &pubKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
 	msg := []byte("canonical\nPOST\n/p\n\nx-wop-nonce:n1")
 
-	sig, err := signMessage(suite, priv, msg, nil)
+	sig, err := signMessage(suite, priv, sm2PlatformUserID, msg, nil)
 	if err != nil {
 		t.Fatalf("SM2 签名: %v", err)
 	}
@@ -70,6 +70,30 @@ func TestSignVerifyMessage_SM2Roundtrip(t *testing.T) {
 	}
 	if err := verifyMessage(suite, pub, []byte("other"), sig); err == nil {
 		t.Error("篡改消息应验签失败")
+	}
+}
+
+// spec:D14-1 出向签名 userId 同源：固定 appKey 签出的 SM2 签名只能以
+// 同一 userId（= appKey 头值）验签通过；平台固定 userId 验签必须失败，
+// 证明出向签名绑定 appKey 而非协议默认值（D14：userId 来源链）。
+func TestSignMessage_SM2_UserIdSameSourceAsAppKey(t *testing.T) {
+	v := loadGoldenVectors(t)
+	suite := mustSuite(t, "WOP-SM2-SM3")
+	priv := &privKey{sm2: mustSM2Priv(t, v.Keys.SM2.PrivateDB64)}
+	pub := &pubKey{sm2: mustSM2Pub(t, v.Keys.SM2.PublicPointB64)}
+	msg := []byte("canonical\nPOST\n/p\n\nx-wop-appkey:test-app-key-01")
+	appKey := []byte("test-app-key-01")
+
+	sig, err := signMessage(suite, priv, appKey, msg, nil)
+	if err != nil {
+		t.Fatalf("SM2 出向签名: %v", err)
+	}
+	raw := mustDecodeB64u(t, sig)
+	if !sm2Verify(pub.sm2, appKey, msg, raw) {
+		t.Error("出向签名应以 appKey 为 userId 验签通过（D14 同源）")
+	}
+	if sm2Verify(pub.sm2, sm2PlatformUserID, msg, raw) {
+		t.Error("出向签名不得以平台固定 userId 验签通过（userId 必须 = appKey）")
 	}
 }
 
@@ -94,8 +118,8 @@ func TestVerifyMessage_LengthPrecheck(t *testing.T) {
 			continue
 		}
 		we := err.(*Error)
-		if we.Code != CodeProtocol {
-			t.Errorf("SM2 %s: 错误类 = %s, want CodeProtocol", bad.name, we.Code)
+		if we.Code != CodeParse {
+			t.Errorf("SM2 %s: 错误类 = %s, want CodeParse", bad.name, we.Code)
 		}
 	}
 
@@ -107,8 +131,8 @@ func TestVerifyMessage_LengthPrecheck(t *testing.T) {
 	}
 	if err := verifyMessage(rsaSuite, rsaPub, msg, EncodeB64URL(make([]byte, 383))); err == nil {
 		t.Error("383B RSA 签名应拒绝（3072 位恒 384B/512 字符）")
-	} else if err.(*Error).Code != CodeProtocol {
-		t.Errorf("RSA 错长: 错误类 = %s, want CodeProtocol", err.(*Error).Code)
+	} else if err.(*Error).Code != CodeParse {
+		t.Errorf("RSA 错长: 错误类 = %s, want CodeParse", err.(*Error).Code)
 	}
 }
 
@@ -121,12 +145,12 @@ func TestVerifyMessage_B64PaddingRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("带 = 的签名应拒绝")
 	}
-	if err.(*Error).Code != CodeProtocol {
-		t.Errorf("错误类 = %s, want CodeProtocol", err.(*Error).Code)
+	if err.(*Error).Code != CodeParse {
+		t.Errorf("错误类 = %s, want CodeParse", err.(*Error).Code)
 	}
 }
 
-// I7：验签失败（密钥不符/内容篡改）对外模糊，仅 CodeVerifyFailed + 固定文案。
+// I7：验签失败（密钥不符/内容篡改）对外模糊，仅 CodeSignature + 固定文案。
 func TestVerifyMessage_Fuzzy(t *testing.T) {
 	v := loadGoldenVectors(t)
 	suite := mustSuite(t, "WOP-SM2-SM3")
@@ -143,7 +167,7 @@ func TestVerifyMessage_Fuzzy(t *testing.T) {
 		t.Fatal("不配对公钥应验签失败")
 	}
 	we := err.(*Error)
-	if we.Code != CodeVerifyFailed || we.Message != verifyFuzzyMessage {
+	if we.Code != CodeSignature || we.Message != verifyFuzzyMessage {
 		t.Errorf("I7 违规：code=%s msg=%q", we.Code, we.Message)
 	}
 }

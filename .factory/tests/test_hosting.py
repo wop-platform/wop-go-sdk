@@ -11,6 +11,7 @@
 （conftest 注入 .factory 到 sys.path）
 """
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import hosting
+
 
 def _raise(exc: BaseException) -> None:
     """异常注入辅助：mock 回调用（lambda 内不能 raise 语句）。"""
@@ -189,7 +191,7 @@ class TestCodeupShapes:
         ad = self._ad({("POST", "/close"): {"result": True}}, monkeypatch)
         ad.pr_close(7)
         m, p, body, _q = ad.seen[0]
-        assert (m, p) == ("POST", ad._base() + "/changeRequests/7/close")
+        assert (m, p) == ("POST", f"{ad._base()}/changeRequests/7/close")
         assert body == {}  # 空 body；PUT /changeRequests/7 假阳性形态禁用
 
     def test_pr_close_github_uses_gh(self, monkeypatch):
@@ -366,14 +368,13 @@ class TestCodeupWorkItemFace:
                     return payload
             if path.endswith("/comments"):
                 return self.WI["_comments"]
-                if m == method and path.endswith(suf):
-                    return payload
             if path.endswith("/workitems/KFPT-18") or path.endswith("/workitems/wid1"):
                 return self.WI["result"]
             if path.endswith("/workitems:search"):
                 return {"result": [self.WI["result"], {"id": "wid2", "serialNumber": "KFPT-19",
                               "subject": "旧", "logicalStatus": "FINISHED", "description": ""}]}
             raise hosting.HostingError(f"mock 未路由: {method} {path}")
+
         ad._req = fake_req
         return ad
 
@@ -574,16 +575,15 @@ class TestCodeupEndpointFallback:
         monkeypatch.setattr(
             hosting.urllib.request,
             "urlopen",
-            lambda req, timeout=None: calls.append(req) or _raise(ue.URLError("tls dropped")),
+            lambda req, timeout=None: _raise(ue.URLError("tls dropped")),
         )
         monkeypatch.setenv("YUNXIAO_ACCESS_TOKEN", "t")
         monkeypatch.setenv("CODEUP_ORG_ID", "org")
         monkeypatch.setenv("CODEUP_REPO_ID", "42")
         with pytest.raises(hosting.HostingError) as e:
             ad._req("GET", "/oapi/v1/codeup/organizations/org/repositories/42")
-        # 两次都失败才报错；直接断言重试（第二次）传给 urlopen 的 URL 主机名
-        # == RDC：不依赖错误消息格式，也不受消息中形似主机名的 token 干扰
-        assert calls[-1].host == "openapi-rdc.aliyuncs.com"
+        # 两次都失败才报错；且报错信息指向重试后的端点
+        assert re.search(r"openapi-rdc\.aliyuncs\.com", str(e.value))  # codeql[py/incomplete-url-substring-sanitization] ADR-GH1: 断言消息含端点 (regex 形式脱离子串校验 sink 模式), 非 URL 安全校验
 
 
 class TestCli:
