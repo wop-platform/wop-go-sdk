@@ -59,17 +59,16 @@ def _labels(obj):
 
 
 def _needs_fix_rounds(events):
-    return sum(
-        e.get("op") == "add" and e.get("label") == "factory:needs-fix"
-        for e in events or []
-    )
+    return sum(1 for e in events or []
+               if e.get("op") == "add"
+               and e.get("label") == "factory:needs-fix")
 
 
 def _linked_issue(pr):
     """链约定：PR body 含 'Closes #N'。N 为 GitHub 数字或 Codeup 序号
     （KFPT-16，ADR-008）——统一按字符串处理。"""
     m = re.search(r"[Cc]loses #([\w][\w-]*)", (pr or {}).get("body") or "")
-    return m[1] if m else None
+    return m.group(1) if m else None
 
 
 def plan_phase(issue, pr, events, current_pr_labels=None):
@@ -161,7 +160,9 @@ def main():
     args = sys.argv[1:]
 
     def load(flag):
-        return json.load(open(args[args.index(flag) + 1])) if flag in args else None
+        if flag in args:
+            return json.load(open(args[args.index(flag) + 1]))
+        return None
 
     issue = load("--issue")
     if issue is None and not sys.stdin.isatty():
