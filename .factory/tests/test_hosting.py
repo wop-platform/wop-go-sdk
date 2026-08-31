@@ -482,6 +482,7 @@ class TestCodeupEndpointFallback:
             pass
 
         import urllib.error as ue
+        import urllib.parse as up
         monkeypatch.setattr(
             hosting.urllib.request,
             "urlopen",
@@ -493,7 +494,15 @@ class TestCodeupEndpointFallback:
         with pytest.raises(hosting.HostingError) as e:
             ad._req("GET", "/oapi/v1/codeup/organizations/org/repositories/42")
         # 两次都失败才报错；且报错信息指向重试后的端点
-        assert "openapi-rdc.aliyuncs.com" in str(e.value)
+        msg = str(e.value)
+        hosts = []
+        for tok in msg.split():
+            t = tok.strip("()[]{}<>,;\"'")
+            if "://" in t:
+                h = up.urlparse(t).hostname
+                if h:
+                    hosts.append(h)
+        assert "openapi-rdc.aliyuncs.com" in hosts
 
 
 class TestCli:
