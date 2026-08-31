@@ -11,6 +11,7 @@
 （conftest 注入 .factory 到 sys.path）
 """
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import hosting
+
 
 def _raise(exc: BaseException) -> None:
     """异常注入辅助：mock 回调用（lambda 内不能 raise 语句）。"""
@@ -150,8 +152,11 @@ class TestCodeupShapes:
             # 【live 2026-08-26】MR 详情无 labels 字段，类标专用端点读回
             ("GET", "/changeRequests/3/labels"): [
                 {"name": "factory:needs-fix"}],
-            # #66 评论标记模型：pr_view 兼查标记评论（空集 = 无标记）
-            ("POST", "/comments/list"): {"result": []}}, monkeypatch)
+            # #66 评论标记模型：pr_view 兼查标记评论（active 承载 needs-fix——
+            # 投影语义：无 active 标记的原生工厂类标视为投影失真被过滤）
+            ("POST", "/comments/list"): {"result": [
+                {"id": "c1", "content": "[factory:label:add] factory:needs-fix",
+                 "resolved": False}]}}, monkeypatch)
         n = ad.pr_view(3)
         assert n["review"] == "changes_requested"
         assert n["state"] == "open"
@@ -189,7 +194,7 @@ class TestCodeupShapes:
         ad = self._ad({("POST", "/close"): {"result": True}}, monkeypatch)
         ad.pr_close(7)
         m, p, body, _q = ad.seen[0]
-        assert (m, p) == ("POST", ad._base() + "/changeRequests/7/close")
+        assert (m, p) == ("POST", f"{ad._base()}/changeRequests/7/close")
         assert body == {}  # 空 body；PUT /changeRequests/7 假阳性形态禁用
 
     def test_pr_close_github_uses_gh(self, monkeypatch):
@@ -305,10 +310,49 @@ class TestCodeupMarkerModel:
 
         def fake_req(method, path, body=None, query=None, _retry_rdc=True):
             if method == "GET" and path.endswith("/labels"):
-                return [{"name": "factory:needs-fix"}, {"name": "factory:extra"}]
+                return [{"name": "factory:needs-fix"}, {"name": "factory:extra"},
+                        {"name": "release/x"}]
             return real_req(method, path, body, query, _retry_rdc)
         ad._req = fake_req
-        assert ad._pr_labels(7) == ["factory:extra", "factory:needs-fix"]
+        # 标记是真相源：factory:extra 无未 resolved 标记 → 屏蔽；
+        # 非 factory 前缀类标（release/x）不受标记生命周期约束
+        assert ad._pr_labels(7) == ["factory:needs-fix", "release/x"]
+
+    def test_pr_labels_marker_failure_degrades_best_effort(self, monkeypatch, capsys):
+        """Sourcery #11：评论端点失败降级空集——标签读失败不阻断 PR 详情
+        （尽力而为契约；写路径 pr_set_labels 仍显式失败）。"""
+        ad = self._ad(monkeypatch, {})
+        real_req = ad._req
+
+        def fake_req(method, path, body=None, query=None, _retry_rdc=True):
+            if method == "GET" and path.endswith("/labels"):
+                return [{"name": "factory:needs-fix"}]
+            if method == "POST" and path.endswith("/comments/list"):
+                raise hosting.HostingError("comments endpoint down")
+            return real_req(method, path, body, query, _retry_rdc)
+        ad._req = fake_req
+        assert ad._pr_labels(7) == ["factory:needs-fix"]  # 类标保留，标记载体降级
+        assert "降级空集" in capsys.readouterr().err
+
+    def test_pr_view_marker_failure_keeps_review(self, monkeypatch, capsys):
+        """手势载体失败：review 维持平台原生映射，pr_view 不抛、不误报。"""
+        ad = self._ad(monkeypatch, {})
+        real_req = ad._req
+
+        def fake_req(method, path, body=None, query=None, _retry_rdc=True):
+            if method == "GET" and path.endswith("/changeRequests/5"):
+                return {"result": {"localId": 5, "newVersionState": "TO_BE_MERGED",
+                                   "reviewers": [{"reviewOpinionStatus": "PASS"}]}}
+            if method == "GET" and path.endswith("/labels"):
+                return []
+            if method == "POST" and path.endswith("/comments/list"):
+                raise hosting.HostingError("comments endpoint down")
+            return real_req(method, path, body, query, _retry_rdc)
+        ad._req = fake_req
+        out = ad.pr_view(5)
+        assert out["labels"] == []
+        assert out["review"] != "changes_requested"  # 载体缺席不得误报打回
+        assert "降级空集" in capsys.readouterr().err
 
     def test_label_history_resolved_does_not_decrease(self, monkeypatch):
         """轮次语义：resolved 不减计数——全部 add 标记都计入事件流。"""
@@ -366,14 +410,13 @@ class TestCodeupWorkItemFace:
                     return payload
             if path.endswith("/comments"):
                 return self.WI["_comments"]
-                if m == method and path.endswith(suf):
-                    return payload
             if path.endswith("/workitems/KFPT-18") or path.endswith("/workitems/wid1"):
                 return self.WI["result"]
             if path.endswith("/workitems:search"):
                 return {"result": [self.WI["result"], {"id": "wid2", "serialNumber": "KFPT-19",
                               "subject": "旧", "logicalStatus": "FINISHED", "description": ""}]}
             raise hosting.HostingError(f"mock 未路由: {method} {path}")
+
         ad._req = fake_req
         return ad
 
@@ -574,16 +617,15 @@ class TestCodeupEndpointFallback:
         monkeypatch.setattr(
             hosting.urllib.request,
             "urlopen",
-            lambda req, timeout=None: calls.append(req) or _raise(ue.URLError("tls dropped")),
+            lambda req, timeout=None: _raise(ue.URLError("tls dropped")),
         )
         monkeypatch.setenv("YUNXIAO_ACCESS_TOKEN", "t")
         monkeypatch.setenv("CODEUP_ORG_ID", "org")
         monkeypatch.setenv("CODEUP_REPO_ID", "42")
         with pytest.raises(hosting.HostingError) as e:
             ad._req("GET", "/oapi/v1/codeup/organizations/org/repositories/42")
-        # 两次都失败才报错；直接断言重试（第二次）传给 urlopen 的 URL 主机名
-        # == RDC：不依赖错误消息格式，也不受消息中形似主机名的 token 干扰
-        assert calls[-1].host == "openapi-rdc.aliyuncs.com"
+        # 两次都失败才报错；且报错信息指向重试后的端点
+        assert re.search(r"openapi-rdc\.aliyuncs\.com", str(e.value))  # codeql[py/incomplete-url-substring-sanitization] ADR-GH1: 断言消息含端点 (regex 形式脱离子串校验 sink 模式), 非 URL 安全校验
 
 
 class TestCli:

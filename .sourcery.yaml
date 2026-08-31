@@ -6,7 +6,6 @@ version: '1'
 
 ignore:
 - .git
-- .factory  # 上游同步镜像面：缺陷反馈上游修复后 sync 追平，本仓评审不拦截（sync --check 锚定漂移）
 - env
 - .env
 - .tox
@@ -24,6 +23,7 @@ rule_settings:
   disable:
   - no-loop-in-tests
   - no-conditionals-in-tests
+  - low-code-quality  # 2026-09-01 评审保留：.factory 镜像面低密度提示噪音大，与上游对齐
   rule_types:
   - refactoring
   - suggestion
