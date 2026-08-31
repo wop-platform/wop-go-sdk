@@ -110,7 +110,7 @@ GCM 同密钥下 IV 复用即协议不变式 I4 违规。
 本地与 CI 消费同一副本：
 
 ```bash
-go test ./... -covermode=atomic -coverprofile=cover.out   # 全量测试（含向量 conformance）
+go test ./... -covermode=atomic -coverprofile=cover.out -coverpkg=.   # 全量测试（含向量 conformance）
 go tool cover -func=cover.out | grep total                # 语句覆盖率 ≥98%（当前 99.1%）
 ```
 

@@ -117,7 +117,7 @@ The golden vector fixture `internal/testdata/crypto-vectors.json` is a byte-for-
 of the protocol source of truth (never hand-edit); local tests and CI consume the same copy:
 
 ```bash
-go test ./... -covermode=atomic -coverprofile=cover.out   # full suite incl. vector conformance
+go test ./... -covermode=atomic -coverprofile=cover.out -coverpkg=.   # full suite incl. vector conformance
 go tool cover -func=cover.out | grep total                # statement coverage ≥98% (currently 99.1%)
 ```
 
