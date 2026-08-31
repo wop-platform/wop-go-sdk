@@ -25,7 +25,7 @@ jobs:
         run: go vet ./...
       - name: test + coverage
         run: |
-          go test ./... -covermode=atomic -coverprofile=cover.out
+          go test ./... -covermode=atomic -coverprofile=cover.out -coverpkg=.
           total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%","",$3); print $3}')
           echo "total statement coverage: ${total}%"
           awk -v t="$total" 'BEGIN { if (t+0 < 98) { print "coverage " t "% < 98%"; exit 1 } }'
