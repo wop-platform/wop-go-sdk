@@ -118,7 +118,7 @@ of the protocol source of truth (never hand-edit); local tests and CI consume th
 
 ```bash
 go test ./... -covermode=atomic -coverprofile=cover.out   # full suite incl. vector conformance
-go tool cover -func=cover.out | grep total                # statement coverage ≥98% (currently 98.6%)
+go tool cover -func=cover.out | grep total                # statement coverage ≥98% (currently 99.1%)
 ```
 
 Coverage (spec appendix B.2 / D9):

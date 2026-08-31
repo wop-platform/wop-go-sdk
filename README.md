@@ -111,7 +111,7 @@ GCM 同密钥下 IV 复用即协议不变式 I4 违规。
 
 ```bash
 go test ./... -covermode=atomic -coverprofile=cover.out   # 全量测试（含向量 conformance）
-go tool cover -func=cover.out | grep total                # 语句覆盖率 ≥98%（当前 98.6%）
+go tool cover -func=cover.out | grep total                # 语句覆盖率 ≥98%（当前 99.1%）
 ```
 
 覆盖面（spec 附录 B.2 / D9）：
