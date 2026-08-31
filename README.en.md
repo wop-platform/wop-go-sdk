@@ -1,6 +1,5 @@
 # WOP Go SDK
 [![Go Reference](https://pkg.go.dev/badge/github.com/wop-platform/wop-go-sdk.svg)](https://pkg.go.dev/github.com/wop-platform/wop-go-sdk)
-[![Go Report Card](https://goreportcard.com/badge/github.com/wop-platform/wop-go-sdk)](https://goreportcard.com/report/github.com/wop-platform/wop-go-sdk)
 [![CI](https://github.com/wop-platform/wop-go-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/wop-platform/wop-go-sdk/actions/workflows/ci.yml)
 [![Mutation Gate](https://github.com/wop-platform/wop-go-sdk/actions/workflows/mutation.yml/badge.svg)](https://github.com/wop-platform/wop-go-sdk/actions/workflows/mutation.yml)
 [![Release](https://img.shields.io/github/v/release/wop-platform/wop-go-sdk)](https://github.com/wop-platform/wop-go-sdk/releases)

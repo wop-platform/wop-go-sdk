@@ -19,6 +19,10 @@ import pytest
 
 import hosting
 
+def _raise(exc: BaseException) -> None:
+    """异常注入辅助：mock 回调用（lambda 内不能 raise 语句）。"""
+    raise exc
+
 
 def _cp(rc=0, out="", err=""):
     return subprocess.CompletedProcess([], rc, out, err)
@@ -567,16 +571,19 @@ class TestCodeupEndpointFallback:
             pass
 
         import urllib.error as ue
-        monkeypatch.setattr(hosting.urllib.request, "urlopen",
-                            lambda req, timeout=None: (_ for _ in ()).throw(
-                                ue.URLError("tls dropped")))
+        monkeypatch.setattr(
+            hosting.urllib.request,
+            "urlopen",
+            lambda req, timeout=None: calls.append(req) or _raise(ue.URLError("tls dropped")),
+        )
         monkeypatch.setenv("YUNXIAO_ACCESS_TOKEN", "t")
         monkeypatch.setenv("CODEUP_ORG_ID", "org")
         monkeypatch.setenv("CODEUP_REPO_ID", "42")
         with pytest.raises(hosting.HostingError) as e:
             ad._req("GET", "/oapi/v1/codeup/organizations/org/repositories/42")
-        # 两次都失败才报错；且报错信息指向重试后的端点
-        assert "openapi-rdc.aliyuncs.com" in str(e.value)
+        # 两次都失败才报错；直接断言重试（第二次）传给 urlopen 的 URL 主机名
+        # == RDC：不依赖错误消息格式，也不受消息中形似主机名的 token 干扰
+        assert calls[-1].host == "openapi-rdc.aliyuncs.com"
 
 
 class TestCli:
