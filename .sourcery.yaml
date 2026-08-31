@@ -1,0 +1,29 @@
+# Sourcery 规则保留清单（显式化"评论清零"的边界）。
+# 2026-08-31 评审确认的保留项：
+# - no-loop-in-tests / no-conditionals-in-tests：测试内循环/条件断言是惯用法
+# 其余规则全开；新增触发点由 CI gate（sourcery-review-gate.yml）拦截。
+version: '1'
+
+ignore:
+- .git
+- env
+- .env
+- .tox
+- node_modules
+- vendor
+- venv
+- .venv
+- dist
+- coverage
+- StrykerOutput
+
+rule_settings:
+  enable:
+  - default
+  disable:
+  - no-loop-in-tests
+  - no-conditionals-in-tests
+  rule_types:
+  - refactoring
+  - suggestion
+  - comment

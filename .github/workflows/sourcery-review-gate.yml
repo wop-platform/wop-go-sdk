@@ -1,0 +1,38 @@
+name: sourcery-review-gate
+
+# 合并门禁：sourcery review 存在未解决 issue 时禁止合并（评论清零契约的自动化形态）。
+# sourcery-ai[bot] 评论与 CLI 同引擎同规则；修复后 push 触发重跑，绿 = 可合并。
+# 前提：仓库需配置 SOURCERY_TOKEN secret（sourcery.ai 账号 token），否则本 job 显式失败。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sourcery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Sourcery CLI
+        run: python -m pip install --quiet sourcery
+      - name: Sourcery gate — issues must be cleared before merge
+        env:
+          SOURCERY_TOKEN: ${{ secrets.SOURCERY_TOKEN }}
+        run: |
+          if [ -z "$SOURCERY_TOKEN" ]; then
+            echo "::error::SOURCERY_TOKEN secret 未配置：仓库 Settings → Secrets and variables → Actions 添加 sourcery.ai 账号 token，否则本门禁无法运行。"
+            exit 1
+          fi
+          BASE="${{ github.event.pull_request.base.ref }}"
+          git fetch origin "$BASE" --quiet
+          sourcery review --check --diff "git diff origin/$BASE...HEAD"
