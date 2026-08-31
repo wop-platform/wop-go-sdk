@@ -13,28 +13,37 @@ package wop
 
 import "fmt"
 
-// ErrorCode 是稳定的公共错误码契约（商户可编程处理）。
-// 分类依据 crypto-strategy-spec §10.2：鉴权前可判定的公开协议知识 → 明确；
-// 依赖密钥参与的判定 → 模糊（防 padding-oracle 式信息泄露）。
+// ErrorCode 是公共错误码契约（商户可编程处理），取值必须来自
+// wop-sdk-spec §2.2 闭集（小写 ASCII，跨语言恒定，禁止自造）。
+// 闭集七值：configuration / parse / unsupported / integrity /
+// consistency / signature / decrypt。
+//
+// 明确类（configuration/parse/unsupported/integrity/consistency）：
+// 依赖公开协议知识、鉴权前可判定，Message 可含细节（D6 允许全等断言）。
+// 模糊类（signature/decrypt）：依赖密钥参与的判定，Message 恒为固定
+// 模糊文案（I7，防 padding-oracle 式信息泄露），禁止携带原因细节。
 type ErrorCode string
 
 const (
-	// CodeConfig 配置类（明确）：密钥缺失、密钥解析失败、密钥与套件不符。
-	CodeConfig ErrorCode = "CONFIG"
-	// CodeSuiteParse 解析类（明确）：securityReq 空值/格式/前缀错误。
-	CodeSuiteParse ErrorCode = "SUITE_PARSE"
-	// CodeSuiteUnsupported 支持类（明确）：算法不在支持列表、跨族组合、长度非法。
-	CodeSuiteUnsupported ErrorCode = "SUITE_UNSUPPORTED"
-	// CodeProtocol 协议格式类（明确）：x-wop-sign / digest 头 / L2 信封结构非法。
-	CodeProtocol ErrorCode = "PROTOCOL"
-	// CodeDigestMismatch 完整性类（明确）：摘要与线上报文字节不符（D2）。
-	CodeDigestMismatch ErrorCode = "DIGEST_MISMATCH"
-	// CodeVerifyFailed 验签类（模糊）：签名验证失败，对外不区分原因（I7）。
-	CodeVerifyFailed ErrorCode = "VERIFY_FAILED"
-	// CodeDecryptFailed 解密类（模糊）：DEK 解包或 GCM 解密失败，对外不区分原因（I7）。
-	CodeDecryptFailed ErrorCode = "DECRYPT_FAILED"
-	// CodeAlgMismatch 一致性类（明确）：dek alg 与套件族不符（公开映射知识，I3 允许提前拒）。
-	CodeAlgMismatch ErrorCode = "ALG_MISMATCH"
+	// CodeConfiguration 配置类（明确）：appKey / 密钥材料缺失或非法、
+	// securityReq 非法或跨族（F1）。
+	CodeConfiguration ErrorCode = "configuration"
+	// CodeParse 协议解析类（明确）：header / 信封 / 线上编码格式（D1/D3）。
+	CodeParse ErrorCode = "parse"
+	// CodeUnsupported 能力不支持类（明确）：合法套件但本 SDK 未实现
+	// （如 TS/PHP 首版 SM，spec §1.2）。Go 已实现全部合法套件，
+	// 无触发路径，保留枚举值以满足闭集完整性。
+	CodeUnsupported ErrorCode = "unsupported"
+	// CodeIntegrity 完整性类（明确）：digest 与线上报文字节不符（D2）。
+	CodeIntegrity ErrorCode = "integrity"
+	// CodeConsistency 一致性类（明确）：dek alg 与套件族不符
+	// （公开映射知识，I3 允许提前拒）。
+	CodeConsistency ErrorCode = "consistency"
+	// CodeSignature 验签类（模糊）：签名验证失败，对外不区分原因（I7）。
+	CodeSignature ErrorCode = "signature"
+	// CodeDecrypt 解密类（模糊）：DEK 解包或 GCM 解密失败，
+	// 对外不区分原因（I7）。
+	CodeDecrypt ErrorCode = "decrypt"
 )
 
 // I7 模糊化固定文案：验签/解密失败对外仅此二句，不携带任何细节。
@@ -65,7 +74,7 @@ func newError(code ErrorCode, format string, args ...any) *Error {
 // fuzzyError 构造模糊类错误（验签/解密，I7：文案钉死，细节不外泄）。
 func fuzzyError(code ErrorCode) *Error {
 	msg := verifyFuzzyMessage
-	if code == CodeDecryptFailed {
+	if code == CodeDecrypt {
 		msg = decryptFuzzyMessage
 	}
 	return &Error{Code: code, Message: msg}

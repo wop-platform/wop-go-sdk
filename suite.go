@@ -54,29 +54,30 @@ var suiteRegistry = map[string]Suite{
 }
 
 // ParseSuite 从 securityReq 解析算法套件（F1）。
-// 错误分类（spec §2.4）：格式/前缀错误 → 解析类；算法不支持/跨族 → 支持类。
-// 两者对外语义均明确。
+// 错误分类（wop-sdk-spec §2.2）：securityReq 空值/格式非法/算法不在支持
+// 列表/跨族组合一律 → configuration（F1「securityReq 非法或跨族」）；
+// unsupported 仅指合法套件但本 SDK 未实现（Go 已实现全部合法套件，无此路径）。
 func ParseSuite(securityReq string) (Suite, error) {
 	trimmed := strings.TrimSpace(securityReq)
 	if trimmed == "" {
-		return Suite{}, newError(CodeSuiteParse, "securityReq 为空")
+		return Suite{}, newError(CodeConfiguration, "securityReq 为空")
 	}
 	parts := strings.Split(trimmed, "-")
 	if len(parts) != 3 || parts[0] != "WOP" {
-		return Suite{}, newError(CodeSuiteParse,
+		return Suite{}, newError(CodeConfiguration,
 			"securityReq 格式非法 %q：应为 WOP-<密钥算法>-<摘要算法> 三段式", trimmed)
 	}
 	keyAlg, digestAlg := parts[1], parts[2]
 	if _, ok := supportedKeyAlgs[keyAlg]; !ok {
-		return Suite{}, newError(CodeSuiteUnsupported, "不支持的密钥算法 %q（支持 RSA3072/RSA4096/SM2）", keyAlg)
+		return Suite{}, newError(CodeConfiguration, "不支持的密钥算法 %q（支持 RSA3072/RSA4096/SM2）", keyAlg)
 	}
 	if _, ok := supportedDigestAlgs[digestAlg]; !ok {
-		return Suite{}, newError(CodeSuiteUnsupported, "不支持的摘要算法 %q（支持 SHA256/SM3）", digestAlg)
+		return Suite{}, newError(CodeConfiguration, "不支持的摘要算法 %q（支持 SHA256/SM3）", digestAlg)
 	}
 	suite, ok := suiteRegistry[trimmed]
 	if !ok {
 		// 注册表覆盖全部合法组合，缺失即跨族（I5：国际/国密互斥贯穿）。
-		return Suite{}, newError(CodeSuiteUnsupported,
+		return Suite{}, newError(CodeConfiguration,
 			"不支持的算法组合 %q：密钥族 %s 与摘要族 %s 跨族", trimmed, keyAlg, digestAlg)
 	}
 	return suite, nil

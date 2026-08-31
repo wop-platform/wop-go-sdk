@@ -34,7 +34,7 @@ func DigestHeaderValue(s Suite, data []byte) string {
 // 结构非法（双空格、大写、长度不符、未支持 tag 等）→ 协议类明确错误。
 func ParseContentDigest(value string) (tag, hexSum string, err error) {
 	if !digestWirePattern.MatchString(value) {
-		return "", "", newError(CodeProtocol,
+		return "", "", newError(CodeParse,
 			"x-wop-content-digest 格式非法：须为 <sha-256|sm3> + 恰一空格 + 64 位小写 hex")
 	}
 	tag, hexSum, _ = strings.Cut(value, " ") // 正则已钉死恰一空格
@@ -49,26 +49,26 @@ func ValidateContentDigestHeader(s Suite, headerValue string) error {
 		return err
 	}
 	if tag != s.DigestTag() {
-		return newError(CodeProtocol,
+		return newError(CodeParse,
 			"x-wop-content-digest 标签 %q 与套件 %s 族不符（跨族拒绝）", tag, s.SecurityReq())
 	}
 	return nil
 }
 
 // ValidateContentDigest 复核线上报文摘要：结构（D2）→ 套件族耦合（I5）→ 值比对。
-// 摘要不匹配返回完整性类明确错误（CodeDigestMismatch）。
+// 摘要不匹配返回完整性类明确错误（CodeIntegrity）。
 func ValidateContentDigest(s Suite, headerValue string, wireBody []byte) error {
 	tag, hexSum, err := ParseContentDigest(headerValue)
 	if err != nil {
 		return err
 	}
 	if tag != s.DigestTag() {
-		return newError(CodeProtocol,
+		return newError(CodeParse,
 			"x-wop-content-digest 标签 %q 与套件 %s 族不符（跨族拒绝）", tag, s.SecurityReq())
 	}
 	computed := LowerHex(s.Digest(wireBody))
 	if subtle.ConstantTimeCompare([]byte(computed), []byte(hexSum)) != 1 {
-		return newError(CodeDigestMismatch, "x-wop-content-digest 与线上报文字节不匹配")
+		return newError(CodeIntegrity, "x-wop-content-digest 与线上报文字节不匹配")
 	}
 	return nil
 }

@@ -20,7 +20,7 @@ func verifyFail(err error) VerifyResult {
 	if we, ok := err.(*Error); ok {
 		return VerifyResult{OK: false, Code: we.Code, Reason: we.Message}
 	}
-	return VerifyResult{OK: false, Code: CodeConfig, Reason: "内部错误"}
+	return VerifyResult{OK: false, Code: CodeConfiguration, Reason: "内部错误"}
 }
 
 // VerifyResponse 校验网关响应（F6 顺序钉死）：
@@ -35,7 +35,7 @@ func (c *Client) VerifyResponse(method, path string, header http.Header, wireBod
 func (c *Client) VerifyCallback(callbackURL string, header http.Header, wireBody []byte) VerifyResult {
 	u, err := url.Parse(callbackURL)
 	if err != nil || u.Path == "" {
-		return verifyFail(newError(CodeProtocol, "回调 URL 非法：%s", callbackURL))
+		return verifyFail(newError(CodeParse, "回调 URL 非法：%s", callbackURL))
 	}
 	return c.verify("POST", u.Path, header, wireBody)
 }
@@ -49,7 +49,7 @@ func (c *Client) verify(method, path string, header http.Header, wireBody []byte
 		return verifyFail(err)
 	}
 	if parsed.securityReq != c.suite.SecurityReq() {
-		return verifyFail(newError(CodeProtocol,
+		return verifyFail(newError(CodeParse,
 			"响应套件 %q 与客户端配置 %q 不符", parsed.securityReq, c.suite.SecurityReq()))
 	}
 	suite := c.suite
@@ -61,13 +61,13 @@ func (c *Client) verify(method, path string, header http.Header, wireBody []byte
 	if hasBody {
 		digestHeader = headerValue(header, HeaderContentDigest)
 		if digestHeader == "" {
-			return verifyFail(newError(CodeDigestMismatch, "有响应体但缺少 x-wop-content-digest"))
+			return verifyFail(newError(CodeIntegrity, "有响应体但缺少 x-wop-content-digest"))
 		}
 		if !containsHeader(parsed.signedHeaders, HeaderContentDigest) {
-			return verifyFail(newError(CodeProtocol, "x-wop-content-digest 未列入 signedHeaders（I1）"))
+			return verifyFail(newError(CodeParse, "x-wop-content-digest 未列入 signedHeaders（I1）"))
 		}
 	} else if headerValue(header, HeaderContentDigest) != "" {
-		return verifyFail(newError(CodeProtocol, "无响应体不应携带 x-wop-content-digest"))
+		return verifyFail(newError(CodeParse, "无响应体不应携带 x-wop-content-digest"))
 	}
 
 	// 2. 验签（I2：先验签后解密）：按 signedHeaders 从真实响应头重建 canonical
@@ -75,7 +75,7 @@ func (c *Client) verify(method, path string, header http.Header, wireBody []byte
 	for _, name := range parsed.signedHeaders {
 		value := headerValue(header, name)
 		if value == "" {
-			return verifyFail(newError(CodeProtocol, "已签名头 %s 在响应中缺失", name))
+			return verifyFail(newError(CodeParse, "已签名头 %s 在响应中缺失", name))
 		}
 		signedMap[name] = value
 	}
@@ -108,10 +108,10 @@ func (c *Client) verify(method, path string, header http.Header, wireBody []byte
 	if err != nil {
 		// 载荷结构在解包之后才可见，属密钥参与层；除 alg 族不符（D8 明确）外
 		// 一律归入解密类模糊（I7 保守默认，与跨仓 interop 合同 n13 对齐）
-		return verifyFail(fuzzyError(CodeDecryptFailed))
+		return verifyFail(fuzzyError(CodeDecrypt))
 	}
 	if !payload.matchesSuite(suite) {
-		return verifyFail(newError(CodeAlgMismatch,
+		return verifyFail(newError(CodeConsistency,
 			"dek alg %q 与套件 %s 族不符（期望 %s）", payload.alg, suite.SecurityReq(), suite.MessageAlgorithm()))
 	}
 	cipherB64u, err := extractEncryptedBody(wireBody)

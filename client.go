@@ -62,7 +62,7 @@ type Client struct {
 // NewClient 解析并校验配置（套件原子装配 + 密钥格式/位数校验，错误均明确）。
 func NewClient(cfg Config) (*Client, error) {
 	if strings.TrimSpace(cfg.AppKey) == "" {
-		return nil, newError(CodeConfig, "AppKey 为空")
+		return nil, newError(CodeConfiguration, "AppKey 为空")
 	}
 	suite, err := ParseSuite(cfg.SecurityReq)
 	if err != nil {
@@ -73,7 +73,7 @@ func NewClient(cfg Config) (*Client, error) {
 		expired = SignExpiredSecondsDefault
 	}
 	if expired < 0 || expired > SignExpiredSecondsMax {
-		return nil, newError(CodeConfig, "ExpiredSeconds 超出允许范围 (0, %d]", SignExpiredSecondsMax)
+		return nil, newError(CodeConfiguration, "ExpiredSeconds 超出允许范围 (0, %d]", SignExpiredSecondsMax)
 	}
 
 	c := &Client{
@@ -149,10 +149,10 @@ func WithRandom(r io.Reader) RequestOption {
 func (c *Client) BuildRequest(method, path string, body []byte, level Level, opts ...RequestOption) (RequestDraft, error) {
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if method == "" {
-		return RequestDraft{}, newError(CodeConfig, "HTTP method 为空")
+		return RequestDraft{}, newError(CodeConfiguration, "HTTP method 为空")
 	}
 	if path == "" {
-		return RequestDraft{}, newError(CodeConfig, "请求 path 为空")
+		return RequestDraft{}, newError(CodeConfiguration, "请求 path 为空")
 	}
 
 	options := RequestOptions{}
@@ -177,7 +177,7 @@ func (c *Client) BuildRequest(method, path string, body []byte, level Level, opt
 	} else {
 		nonceBytes := make([]byte, 16)
 		if _, err := io.ReadFull(random, nonceBytes); err != nil {
-			return RequestDraft{}, newError(CodeConfig, "nonce 生成失败：%v", err)
+			return RequestDraft{}, newError(CodeConfiguration, "nonce 生成失败：%v", err)
 		}
 		headers[HeaderNonce] = hex.EncodeToString(nonceBytes)
 	}
@@ -194,7 +194,7 @@ func (c *Client) BuildRequest(method, path string, body []byte, level Level, opt
 		wireBody = wire
 		headers[HeaderEncrypt] = encryptHeader
 	default:
-		return RequestDraft{}, newError(CodeConfig, "未知加密级别 %q（支持 L0/L2）", string(level))
+		return RequestDraft{}, newError(CodeConfiguration, "未知加密级别 %q（支持 L0/L2）", string(level))
 	}
 
 	// D2/D3/I1：有 body（wire 字节）必产 digest 且必入签名；无 body 缺席。
@@ -210,7 +210,8 @@ func (c *Client) BuildRequest(method, path string, body []byte, level Level, opt
 		SignProtocolVersion+"/"+strconv.FormatInt(c.expiredSeconds, 10), method, path, "",
 		CanonicalHeaders(signedMap))
 
-	signature, err := signMessage(c.suite, &c.merchantPriv, []byte(canonical), random)
+	// D14：出向签名 userId 必须 = x-wop-appkey 头值（= c.appKey），禁止静默回退默认值。
+	signature, err := signMessage(c.suite, &c.merchantPriv, []byte(c.appKey), []byte(canonical), random)
 	if err != nil {
 		return RequestDraft{}, err
 	}
@@ -230,11 +231,11 @@ func (c *Client) BuildRequest(method, path string, body []byte, level Level, opt
 func (c *Client) sealEnvelope(plaintext []byte, random io.Reader) (wireBody []byte, encryptHeader string, err error) {
 	cek := make([]byte, c.suite.cekLen())
 	if _, err := io.ReadFull(random, cek); err != nil {
-		return nil, "", newError(CodeConfig, "CEK 生成失败：%v", err)
+		return nil, "", newError(CodeConfiguration, "CEK 生成失败：%v", err)
 	}
 	iv := make([]byte, gcmIVLen)
 	if _, err := io.ReadFull(random, iv); err != nil {
-		return nil, "", newError(CodeConfig, "IV 生成失败：%v", err)
+		return nil, "", newError(CodeConfiguration, "IV 生成失败：%v", err)
 	}
 
 	ciphertext, err := sealMessage(c.suite, plaintext, cek, iv)

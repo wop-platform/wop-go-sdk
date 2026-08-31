@@ -347,7 +347,7 @@ func (s *bddState) registerSteps(ctx *godog.ScenarioContext) {
 		// 对不同 canonical（URI 换路径）签名：结构合法但与被验内容不符
 		canonical := CanonicalRequest(parsed.authString(), "POST", "/other/path", "", CanonicalHeaders(signedMap))
 		sig, err := signMessage(suite, &privKey{rsa: s.builder.platformPrivR, sm2: s.builder.platformPrivS},
-			[]byte(canonical), deterministicReader())
+			sm2PlatformUserID, []byte(canonical), deterministicReader())
 		if err != nil {
 			return err
 		}
@@ -555,7 +555,7 @@ func bddCrossFamilyL2(t *testing.T, b *platformResponseBuilder, path string, pla
 		signedMap[name] = h.Get(name)
 	}
 	canonical := CanonicalRequest("v1/1800", "POST", path, "", CanonicalHeaders(signedMap))
-	sig, err := signMessage(rsaSuite, &privKey{rsa: b.platformPrivR}, []byte(canonical), rnd)
+	sig, err := signMessage(rsaSuite, &privKey{rsa: b.platformPrivR}, sm2PlatformUserID, []byte(canonical), rnd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +602,7 @@ func bddWrongKeyL2(t *testing.T, b *platformResponseBuilder, path string, plaint
 		signedMap[name] = h.Get(name)
 	}
 	canonical := CanonicalRequest("v1/1800", "POST", path, "", CanonicalHeaders(signedMap))
-	sig, err := signMessage(suite, &privKey{rsa: b.platformPrivR}, []byte(canonical), rnd)
+	sig, err := signMessage(suite, &privKey{rsa: b.platformPrivR}, sm2PlatformUserID, []byte(canonical), rnd)
 	if err != nil {
 		t.Fatal(err)
 	}

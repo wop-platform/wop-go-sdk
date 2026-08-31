@@ -52,8 +52,8 @@ func TestParseSignHeader_Strict(t *testing.T) {
 	for name, header := range reject {
 		if _, err := ParseSignHeader(header); err == nil {
 			t.Errorf("%s (%q) 应拒绝", name, header)
-		} else if we, ok := err.(*Error); !ok || we.Code != CodeProtocol {
-			t.Errorf("%s: 错误类 = %v, want CodeProtocol", name, err)
+		} else if we, ok := err.(*Error); !ok || we.Code != CodeParse {
+			t.Errorf("%s: 错误类 = %v, want CodeParse", name, err)
 		}
 	}
 	if _, err := ParseSignHeader(good); err != nil {
@@ -87,7 +87,7 @@ func TestEncryptHeaderAndEnvelope(t *testing.T) {
 	for name, s := range bad {
 		if _, _, err := parseEncryptHeader(s); err == nil {
 			t.Errorf("%s (%q) 应拒绝", name, s)
-		} else if we, ok := err.(*Error); !ok || we.Code != CodeProtocol {
+		} else if we, ok := err.(*Error); !ok || we.Code != CodeParse {
 			t.Errorf("%s: 错误类 = %v", name, err)
 		}
 	}

@@ -41,14 +41,14 @@ func TestNewClient_ConfigValidation(t *testing.T) {
 		mut  func(*Config)
 		code ErrorCode
 	}{
-		{"空 appKey", func(c *Config) { c.AppKey = "" }, CodeConfig},
-		{"空 securityReq", func(c *Config) { c.SecurityReq = "" }, CodeSuiteParse},
-		{"非法套件", func(c *Config) { c.SecurityReq = "WOP-RSA3072-SM3" }, CodeSuiteUnsupported},
-		{"空商户私钥", func(c *Config) { c.MerchantPrivateKey = "" }, CodeConfig},
-		{"空平台公钥", func(c *Config) { c.PlatformPublicKey = "" }, CodeConfig},
-		{"私钥垃圾", func(c *Config) { c.MerchantPrivateKey = "!!!" }, CodeConfig},
-		{"expired 非法", func(c *Config) { c.ExpiredSeconds = -1 }, CodeConfig},
-		{"expired 超上限", func(c *Config) { c.ExpiredSeconds = 86401 }, CodeConfig},
+		{"空 appKey", func(c *Config) { c.AppKey = "" }, CodeConfiguration},
+		{"空 securityReq", func(c *Config) { c.SecurityReq = "" }, CodeConfiguration},
+		{"非法套件", func(c *Config) { c.SecurityReq = "WOP-RSA3072-SM3" }, CodeConfiguration},
+		{"空商户私钥", func(c *Config) { c.MerchantPrivateKey = "" }, CodeConfiguration},
+		{"空平台公钥", func(c *Config) { c.PlatformPublicKey = "" }, CodeConfiguration},
+		{"私钥垃圾", func(c *Config) { c.MerchantPrivateKey = "!!!" }, CodeConfiguration},
+		{"expired 非法", func(c *Config) { c.ExpiredSeconds = -1 }, CodeConfiguration},
+		{"expired 超上限", func(c *Config) { c.ExpiredSeconds = 86401 }, CodeConfiguration},
 	}
 	for _, tc := range cases {
 		cfg := valid

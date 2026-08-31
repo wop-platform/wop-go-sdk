@@ -56,8 +56,8 @@ func TestTrimAll_CollapsesRepeatedWhitespace(t *testing.T) {
 
 // LCR errors.go:55 —— Error 输出格式是商户可编程契约（code 可解析）。
 func TestError_StringFormatContract(t *testing.T) {
-	e := &Error{Code: CodeConfig, Message: "密钥材料为空"}
-	if got := e.Error(); got != "wop: [CONFIG] 密钥材料为空" {
+	e := &Error{Code: CodeConfiguration, Message: "密钥材料为空"}
+	if got := e.Error(); got != "wop: [configuration] 密钥材料为空" {
 		t.Errorf("Error() = %q", got)
 	}
 }
@@ -113,7 +113,7 @@ func TestNewClient_TrailingSlashBaseURLNormalized(t *testing.T) {
 func TestVerifyCallback_EmptyPathRejected(t *testing.T) {
 	c := verifyClient(t, "WOP-RSA3072-SHA256")
 	res := c.VerifyCallback("https://example.com", http.Header{}, nil)
-	if res.OK || res.Code != CodeProtocol {
-		t.Errorf("无 path 回调应 PROTOCOL 拒绝: ok=%v code=%s", res.OK, res.Code)
+	if res.OK || res.Code != CodeParse {
+		t.Errorf("无 path 回调应 parse 拒绝: ok=%v code=%s", res.OK, res.Code)
 	}
 }

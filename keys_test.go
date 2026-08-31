@@ -64,8 +64,8 @@ func TestParseRSAKeys_Rejects(t *testing.T) {
 			t.Errorf("%s: 应拒绝", tc.name)
 			continue
 		}
-		if we, ok := err.(*Error); !ok || we.Code != CodeConfig {
-			t.Errorf("%s: 错误类 = %v, want CodeConfig", tc.name, err)
+		if we, ok := err.(*Error); !ok || we.Code != CodeConfiguration {
+			t.Errorf("%s: 错误类 = %v, want CodeConfiguration", tc.name, err)
 		}
 	}
 	if _, err := parseRSAPrivateKey(""); err == nil {
@@ -111,8 +111,8 @@ func TestParseSM2Keys_Rejects(t *testing.T) {
 	for name, raw := range pubReject {
 		if _, err := parseSM2PublicKey(encodeStdB64(raw)); err == nil {
 			t.Errorf("SM2 公钥 %s 应拒绝", name)
-		} else if we, ok := err.(*Error); !ok || we.Code != CodeConfig {
-			t.Errorf("SM2 公钥 %s: 错误类 = %v, want CodeConfig", name, err)
+		} else if we, ok := err.(*Error); !ok || we.Code != CodeConfiguration {
+			t.Errorf("SM2 公钥 %s: 错误类 = %v, want CodeConfiguration", name, err)
 		}
 	}
 
@@ -143,8 +143,8 @@ func TestValidateRSAKeySize(t *testing.T) {
 	if err == nil {
 		t.Fatal("3072 套件 + 4096 密钥应拒绝")
 	}
-	if we := err.(*Error); we.Code != CodeConfig {
-		t.Errorf("错误类 = %s, want CodeConfig", we.Code)
+	if we := err.(*Error); we.Code != CodeConfiguration {
+		t.Errorf("错误类 = %s, want CodeConfiguration", we.Code)
 	}
 	suite4096 := mustSuite(t, "WOP-RSA4096-SHA256")
 	if err := validateRSAKeySize(suite4096, priv4096); err != nil {
