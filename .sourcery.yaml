@@ -6,6 +6,7 @@ version: '1'
 
 ignore:
 - .git
+- .factory  # 上游同步镜像面：缺陷反馈上游修复后 sync 追平，本仓评审不拦截（sync --check 锚定漂移）
 - env
 - .env
 - .tox
