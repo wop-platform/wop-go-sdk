@@ -100,6 +100,45 @@ func TestDefaultTransport_ResponseLimitBoundary(t *testing.T) {
 	}
 }
 
+// spec:D4 OKN 字面量锚 transport.go:33 —— D4 条文：响应体上限 11MB（11<<20 = 11534336 字节），
+// 读取过程中生效（超限即断流）。既有边界测试（TestDefaultTransport_ResponseLimitBoundary 及
+// transport_test.go 超限分支）均以 maxResponseBytes 常量构造请求与断言，与实现自指：
+// 变异审计档案（wop-specs docs/mutation-survivors-wop-go-sdk.md review 组）记录的两个 OKN
+// 幸存体（transport.go:33:26 11→12、transport.go:33:32 20→21，均为升上限方向）因此不可见。
+// 本测试改用字面量钉死两端，裁决为补锚测试而非白名单：
+//   - 恰 11534336 字节必须通过且完整读到 —— 击杀「降上限」方向 OKN；
+//   - 11534337 字节必须拒绝（CodeParse）—— 击杀「升上限」方向 OKN（含档案两个幸存体）。
+func TestDefaultTransport_ResponseLimitLiteralAnchor_SpecD4(t *testing.T) {
+	const capLiteral = 11534336 // = 11 * 1024 * 1024 = 11 << 20（spec D4 字面量锚，勿改用常量）
+
+	// 下界锚：恰 11MiB（11534336 字节）通过，响应体完整返回
+	srvOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte{0x61}, capLiteral))
+	}))
+	defer srvOK.Close()
+	resp, err := DefaultTransport{HTTPClient: srvOK.Client(), BaseURL: srvOK.URL}.
+		Send(RequestDraft{Method: "GET", Path: "/x"})
+	if err != nil {
+		t.Fatalf("恰 11534336 字节（11MiB）响应应通过: %v", err)
+	}
+	if len(resp.Body) != capLiteral {
+		t.Fatalf("body 长度 = %d, want 11534336", len(resp.Body))
+	}
+	srvOK.Close()
+
+	// 上界锚：11534337 字节（11MiB+1）拒绝，类别 CodeParse
+	srvOver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte{0x61}, capLiteral+1))
+	}))
+	defer srvOver.Close()
+	trOver := DefaultTransport{HTTPClient: srvOver.Client(), BaseURL: srvOver.URL}
+	if _, err := trOver.Send(RequestDraft{Method: "GET", Path: "/x"}); err == nil {
+		t.Fatal("11534337 字节（11MiB+1）响应应拒绝")
+	} else if err.(*Error).Code != CodeParse {
+		t.Fatalf("超限错误类 = %s, want parse", err.(*Error).Code)
+	}
+}
+
 // OBB signheader.go:35 + OKN signheader.go:40/52 —— 解析边界：
 // 前导空格（sp==0）、签名段含 /、expiredSeconds 恰 1 秒。
 func TestParseSignHeader_BoundarySemantics(t *testing.T) {
