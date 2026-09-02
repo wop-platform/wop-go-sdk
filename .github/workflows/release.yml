@@ -23,6 +23,15 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
         run: go vet ./...
+      - name: api golden gate (apidiff)
+        run: |
+          set -euo pipefail
+          report=$(go run golang.org/x/exp/cmd/apidiff -m -allow-internal internal/api/api.golden .)
+          if [ -n "$report" ]; then
+            echo "::error::公共 API 与金样 internal/api/api.golden 不一致（差异见下）。若为有意变更，请重生成金样并与代码同 PR 提交：go run golang.org/x/exp/cmd/apidiff -m -w internal/api/api.golden ."
+            printf '%s\n' "$report"
+            exit 1
+          fi
       - name: test + coverage
         run: |
           go test ./... -covermode=atomic -coverprofile=cover.out -coverpkg=.
