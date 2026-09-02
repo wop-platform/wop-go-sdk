@@ -44,7 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           base="${{ github.event.pull_request.base.sha }}"
-          files=$(git diff --name-only "$base"...HEAD -- '*.go' | grep -v '_test\.go$' | tr '\n' ',' | sed 's/,$//')
+          files=$(git diff --name-only "$base"...HEAD -- '*.go' | { grep -v '_test\.go$' || true; } | tr '\n' ',' | sed 's/,$//')
+          # grep -v 在变更全为 _test.go（零行命中）时退出码 1，会被 set -e 误杀；
+          # 仅对 grep 兜底，git diff/tr/sed 的真实失败仍致命。测试-only PR
+          # 走后续步骤的 files == '' 跳过路径。
           echo "files=$files" >> "$GITHUB_OUTPUT"
           echo "变更源文件: ${files:-<无>}"
       - name: mutation diff gate (口径B ≥ 80%)
