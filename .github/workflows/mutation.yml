@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           base="${{ github.event.pull_request.base.sha }}"
-          files=$(git diff --name-only "$base"...HEAD -- '*.go' | grep -v '_test\.go$' | tr '\n' ',' | sed 's/,$//')
+          files=$(git diff --name-only "$base"...HEAD -- '*.go' | awk '!/_test\.go$/' | tr '\n' ',' | sed 's/,$//')
           echo "files=$files" >> "$GITHUB_OUTPUT"
           echo "变更源文件: ${files:-<无>}"
       - name: mutation diff gate (口径B ≥ 80%)
