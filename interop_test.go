@@ -183,8 +183,8 @@ func TestInteropConformance_Verify(t *testing.T) {
 			}
 		}
 	}
-	if pos != 7 || neg != 16 {
-		t.Fatalf("verify 用例计数哨兵: positive=%d want 7, negative=%d want 16", pos, neg)
+	if pos != 7 || neg != 17 {
+		t.Fatalf("verify 用例计数哨兵: positive=%d want 7, negative=%d want 17", pos, neg)
 	}
 }
 
@@ -207,6 +207,7 @@ func TestInteropFixtureIntegrity(t *testing.T) {
 		"n11-suite-mismatch": true, "n12-envelope-missing-field": true,
 		"n13-dek-key-length": true, "n14-missing-signed-header": true,
 		"n15-digest-without-body": true, "n16-replay-cross-path": true,
+		"n17-encrypt-missing-dek": true,
 	}
 	seen := 0
 	for _, c := range f.Cases {

@@ -592,7 +592,14 @@ func interopNegatives(t *testing.T, v *goldenVectors) []interopCase {
 		Expect: &interopExpect{OK: false, ErrorClass: "protocol"},
 	})
 
-	// n16 P5：跨端点签名重放（签名覆盖 /gateway/pay，用 /gateway/refund 校验）→ 验签类模糊
+	// n16 前置：x-wop-encrypt 值为裸 "L2"（缺 ";dek=" 段）→ 协议类（公开头结构知识，组织裁决）
+	cases = append(cases, resp("n17-encrypt-missing-dek", rsaID, Level2, func(h *http.Header, w []byte) ([]byte, string) {
+		h.Set(HeaderEncrypt, "L2")
+		resignKeepDigest(t, v, rsaID, h, w, "n17")
+		return w, "protocol"
+	}))
+
+	// P5：跨端点签名重放（签名覆盖 /gateway/pay，用 /gateway/refund 校验）→ 验签类模糊
 	cases = append(cases, interopCase{
 		ID: "n16-replay-cross-path", Kind: "verify-negative", Suite: rsaID, Level: "L0",
 		Response: func() *interopResponse {
