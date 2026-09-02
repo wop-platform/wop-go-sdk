@@ -57,8 +57,10 @@ Go 无原生分支计数，按 spec §3 约定以显式负向量清单替代分�
 ### 更新 API 金样（apidiff）
 
 `internal/api/api.golden` 是公共 API 面的金样快照（`golang.org/x/exp/cmd/apidiff` 导出数据，
-二进制格式），范围 = 模块内全部 Go 包（根包、`internal/` 下如未来出现、`tools/`；testdata
-由 go 工具链自动排除）。与 wop-typescript-sdk 的 api-extractor 快照门禁同构：**公共 API 面
+二进制格式），范围 = 模块默认加载（无 tools build tag）的全部 Go 包：当前为根包与
+`tools/mutation`（`internal/` 下未来新增的 Go 包亦纳入，`-allow-internal` 已开启）；
+`tools/tools.go` 带 `tools` build tag、不参与默认加载，不在金样范围内；testdata 由
+go 工具链自动排除）。与 wop-typescript-sdk 的 api-extractor 快照门禁同构：**公共 API 面
 任何变化——新增/删除导出符号、改签名、改导出常量值、增删整个包——都必须显式重生成金样，
 否则 CI 门禁失败**。注意新增导出符号属 apidiff 的"兼容变更"、其自身不会失败，因此门禁判据
 是"报告输出非空即失败"，比 apidiff 默认退出码口径更严。
@@ -144,11 +146,13 @@ feat(sign): 支持 OAEP label 自定义
 
 Go 模块**打 tag 即发布**——无需任何发布凭证，不走应用商店式发布步骤：
 
-1. 确认 `main` CI 全绿，本地完整跑一遍第 3 节五道门禁
+1. 确认 `main` CI 全绿（含 API 金样门禁），本地完整跑一遍第 3 节五道门禁；tag 只打在
+   main 上已通过完整 CI 的提交
 2. 打 tag 并推送：`git tag vX.Y.Z && git push origin vX.Y.Z`（遵循语义化版本；破坏性变更升次版本）
-3. tag 推送自动触发 `.github/workflows/release.yml`：复用 ci.yml 的核心门禁命令做发布前验证
-   （gofmt / go vet / go test + 覆盖率门禁 / 依赖白名单；API 金样与代码同 commit 入库、
-   tag 内自洽，发布期无需重验）
+3. tag 推送自动触发 `.github/workflows/release.yml`：在 tag 提交上独立复跑 ci.yml 的完整
+   五道门禁做发布前验证（gofmt / vet / API 金样 / go test + 覆盖率 / 依赖白名单）——
+   release 不信任上游 CI 状态，指向未过 API 门禁提交的 tag 会在此被拦下（Go tag
+   发布不可撤销，见步骤 5）
 4. 验证通过后无需人工动作：`proxy.golang.org` 会自动索引该 tag，下游 `go get github.com/wop-platform/wop-go-sdk@vX.Y.Z` 即可用，pkg.go.dev 文档随代理同步
 5. 注意 Go 生态版本不可撤销：tag 一旦被代理缓存，同号重打不会生效。发布后发现缺陷
    只能修复后发新 patch 版本；验证失败时**立即删除 tag** 争取在代理缓存前止损
