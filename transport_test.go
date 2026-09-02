@@ -148,7 +148,7 @@ func TestDefaultTransport_Errors(t *testing.T) {
 	// 非法 URL（相对路径且无 BaseURL）
 	if _, err := (DefaultTransport{}).Send(RequestDraft{Method: "GET", Path: "/only/path"}); err == nil {
 		t.Error("相对路径无 BaseURL 应失败")
-	} else if err.(*Error).Code != CodeConfig {
+	} else if err.(*Error).Code != CodeConfiguration {
 		t.Errorf("错误类 = %s", err.(*Error).Code)
 	}
 
@@ -165,7 +165,7 @@ func TestDefaultTransport_Errors(t *testing.T) {
 	defer srv.Close()
 	if _, err := (DefaultTransport{BaseURL: srv.URL}).Send(RequestDraft{Method: "GET", Path: "/x"}); err == nil {
 		t.Error("超限响应应失败")
-	} else if err.(*Error).Code != CodeProtocol {
+	} else if err.(*Error).Code != CodeParse {
 		t.Errorf("超限错误类 = %s", err.(*Error).Code)
 	}
 }

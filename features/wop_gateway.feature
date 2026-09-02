@@ -19,12 +19,12 @@ Feature: 商户接入 WOP 网关
   Scenario: 商户误配跨族套件 WOP-RSA3072-SM3 被拒绝
     Given 商户准备跨族套件标识 WOP-RSA3072-SM3
     When 商户创建 WopClient
-    Then 配置失败，错误码为 SUITE_UNSUPPORTED
+    Then 配置失败，错误码为 configuration
 
   Scenario: 商户误配非法格式套件被拒绝
     Given 商户准备非法格式套件标识 RSA3072-SHA256
     When 商户创建 WopClient
-    Then 配置失败，错误码为 SUITE_PARSE
+    Then 配置失败，错误码为 configuration
 
   # S2 出向 L0 —— F2 canonical、F3 签名、F4 digest、F9 防重放要素
   Scenario: 商户构建 L0 明文请求
@@ -84,14 +84,14 @@ Feature: 商户接入 WOP 网关
     And 平台模拟器产出 L0 响应，路径 /gateway/orders，明文 {"code":"SUCCESS"}
     And 中间人篡改响应体一个字节
     When 商户校验响应
-    Then 校验失败，错误码为 DIGEST_MISMATCH
+    Then 校验失败，错误码为 integrity
 
   Scenario: 平台签名被替换时验签失败且文案模糊
     Given 商户已创建 WOP-RSA3072-SHA256 客户端
     And 平台模拟器产出 L0 响应，路径 /gateway/orders，明文 {"code":"SUCCESS"}
     And 中间人替换签名为另一条合法签名
     When 商户校验响应
-    Then 校验失败，错误码为 VERIFY_FAILED
+    Then 校验失败，错误码为 signature
     And 错误文案为固定模糊文案 "签名验证失败"
 
   Scenario: 响应携带带 = 填充的 base64url 签名被拒
@@ -99,25 +99,25 @@ Feature: 商户接入 WOP 网关
     And 平台模拟器产出 L0 响应，路径 /gateway/orders，明文 {"code":"SUCCESS"}
     And 中间人在签名末尾追加 =
     When 商户校验响应
-    Then 校验失败，错误码为 PROTOCOL
+    Then 校验失败，错误码为 parse
 
   Scenario: 响应套件与客户端配置不符被拒
     Given 商户已创建 WOP-RSA4096-SHA256 客户端
     And 平台模拟器以 WOP-RSA3072-SHA256 套件产出 L0 响应，路径 /gateway/orders，明文 {"code":"SUCCESS"}
     When 商户校验响应
-    Then 校验失败，错误码为 PROTOCOL
+    Then 校验失败，错误码为 parse
 
   Scenario: 平台 DEK 载荷 alg 跨族时一致性拒绝
     Given 商户已创建 WOP-RSA3072-SHA256 客户端
     And 平台模拟器产出 alg 跨族的 L2 响应，路径 /gateway/orders，明文 {"secret":true}
     When 商户校验响应
-    Then 校验失败，错误码为 ALG_MISMATCH
+    Then 校验失败，错误码为 consistency
 
   Scenario: 平台 DEK 密钥错误时 GCM 解密失败且文案模糊
     Given 商户已创建 WOP-RSA3072-SHA256 客户端
     And 平台模拟器产出 DEK 密钥错误的 L2 响应，路径 /gateway/orders，明文 {"secret":true}
     When 商户校验响应
-    Then 校验失败，错误码为 DECRYPT_FAILED
+    Then 校验失败，错误码为 decrypt
     And 错误文案为固定模糊文案 "解密失败"
 
   # S6 一站式 Do —— 概念 API Do + Transport 可插拔

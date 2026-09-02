@@ -51,8 +51,8 @@ func TestParseContentDigest_Strict(t *testing.T) {
 	for _, s := range reject {
 		if _, _, err := ParseContentDigest(s); err == nil {
 			t.Errorf("ParseContentDigest(%q) 应拒绝", s)
-		} else if we, ok := err.(*Error); !ok || we.Code != CodeProtocol {
-			t.Errorf("ParseContentDigest(%q): 错误类 = %v, want CodeProtocol", s, err)
+		} else if we, ok := err.(*Error); !ok || we.Code != CodeParse {
+			t.Errorf("ParseContentDigest(%q): 错误类 = %v, want CodeParse", s, err)
 		}
 	}
 }
@@ -68,8 +68,8 @@ func TestValidateContentDigest_FamilyCoupling(t *testing.T) {
 	if err == nil {
 		t.Fatal("RSA 套件 + sm3 标签应跨族拒绝")
 	}
-	if we := err.(*Error); we.Code != CodeProtocol {
-		t.Errorf("跨族错误类 = %s, want CodeProtocol", we.Code)
+	if we := err.(*Error); we.Code != CodeParse {
+		t.Errorf("跨族错误类 = %s, want CodeParse", we.Code)
 	}
 
 	if err := ValidateContentDigest(sm2, sm3Header, body); err != nil {
@@ -92,8 +92,8 @@ func TestValidateContentDigest_Match(t *testing.T) {
 	if err == nil {
 		t.Fatal("篡改后应不匹配")
 	}
-	if we := err.(*Error); we.Code != CodeDigestMismatch {
-		t.Errorf("不匹配错误类 = %s, want CodeDigestMismatch", we.Code)
+	if we := err.(*Error); we.Code != CodeIntegrity {
+		t.Errorf("不匹配错误类 = %s, want CodeIntegrity", we.Code)
 	}
 }
 

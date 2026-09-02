@@ -21,8 +21,8 @@ func requireConfigError(t *testing.T, what string, err error) {
 		t.Errorf("%s 应为前置 *Error，实际库错误透传 %T: %v", what, err, err)
 		return
 	}
-	if we.Code != CodeConfig {
-		t.Errorf("%s 错误码 = %s, want CONFIG", what, we.Code)
+	if we.Code != CodeConfiguration {
+		t.Errorf("%s 错误码 = %s, want configuration", what, we.Code)
 	}
 }
 

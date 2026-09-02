@@ -34,7 +34,7 @@ func TestDo_ErrorSourcesDistinguished(t *testing.T) {
 
 	cfg := testConfig(t, "WOP-RSA3072-SHA256")
 	cfg.Transport = TransportFunc(func(RequestDraft) (TransportResponse, error) {
-		return TransportResponse{}, newError(CodeConfig, "注入的发送失败")
+		return TransportResponse{}, newError(CodeConfiguration, "注入的发送失败")
 	})
 	c2, err := NewClient(cfg)
 	if err != nil {
@@ -42,7 +42,7 @@ func TestDo_ErrorSourcesDistinguished(t *testing.T) {
 	}
 	_, _, err = c2.Do("POST", "/gateway/x", []byte("{}"), Level0)
 	we, ok := err.(*Error)
-	if !ok || we.Code != CodeConfig || we.Message != "注入的发送失败" {
+	if !ok || we.Code != CodeConfiguration || we.Message != "注入的发送失败" {
 		t.Errorf("发送期错误须原样透传，实际 %v", err)
 	}
 }
@@ -54,8 +54,8 @@ func TestParseSM2PublicKey_LengthPreflight(t *testing.T) {
 	raw[0] = 0x04
 	if _, err := parseSM2PublicKey(base64.StdEncoding.EncodeToString(raw)); err == nil {
 		t.Error("64B 公钥应拒绝")
-	} else if we, ok := err.(*Error); !ok || we.Code != CodeConfig {
-		t.Errorf("64B 公钥应为前置 CONFIG 错误，实际 %T %v", err, err)
+	} else if we, ok := err.(*Error); !ok || we.Code != CodeConfiguration {
+		t.Errorf("64B 公钥应为前置 configuration 错误，实际 %T %v", err, err)
 	}
 }
 
@@ -128,7 +128,7 @@ func TestVerifyResponse_SingleByteBody_RequiresDigest(t *testing.T) {
 	}
 	h.Del(HeaderContentDigest)
 	res := c.VerifyResponse("POST", "/gateway/x", h, wire)
-	if res.OK || res.Code != CodeDigestMismatch {
-		t.Errorf("1 字节响应体缺 digest 应 DIGEST_MISMATCH: ok=%v code=%s", res.OK, res.Code)
+	if res.OK || res.Code != CodeIntegrity {
+		t.Errorf("1 字节响应体缺 digest 应 INTEGRITY: ok=%v code=%s", res.OK, res.Code)
 	}
 }

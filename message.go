@@ -23,7 +23,7 @@ func sealMessage(s Suite, plaintext, key, iv []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(iv) != gcmIVLen {
-		return nil, newError(CodeConfig, "GCM IV 长度须为 12 字节，实际 %d", len(iv))
+		return nil, newError(CodeConfiguration, "GCM IV 长度须为 12 字节，实际 %d", len(iv))
 	}
 	return gcm.Seal(nil, iv, plaintext, nil), nil
 }
@@ -35,11 +35,11 @@ func openMessage(s Suite, ciphertext, key, iv []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(iv) != gcmIVLen {
-		return nil, newError(CodeConfig, "GCM IV 长度须为 12 字节，实际 %d", len(iv))
+		return nil, newError(CodeConfiguration, "GCM IV 长度须为 12 字节，实际 %d", len(iv))
 	}
 	plain, err := gcm.Open(nil, iv, ciphertext, nil)
 	if err != nil {
-		return nil, fuzzyError(CodeDecryptFailed)
+		return nil, fuzzyError(CodeDecrypt)
 	}
 	return plain, nil
 }
@@ -48,7 +48,7 @@ func openMessage(s Suite, ciphertext, key, iv []byte) ([]byte, error) {
 func newMessageGCM(s Suite, key []byte) (cipher.AEAD, error) {
 	want := s.cekLen()
 	if len(key) != want {
-		return nil, newError(CodeConfig, "报文密钥长度须为 %d 字节，实际 %d", want, len(key))
+		return nil, newError(CodeConfiguration, "报文密钥长度须为 %d 字节，实际 %d", want, len(key))
 	}
 	var block cipher.Block
 	var err error
@@ -58,11 +58,11 @@ func newMessageGCM(s Suite, key []byte) (cipher.AEAD, error) {
 		block, err = aes.NewCipher(key)
 	}
 	if err != nil {
-		return nil, newError(CodeConfig, "报文对称密钥非法：%v", err)
+		return nil, newError(CodeConfiguration, "报文对称密钥非法：%v", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, newError(CodeConfig, "GCM 初始化失败：%v", err)
+		return nil, newError(CodeConfiguration, "GCM 初始化失败：%v", err)
 	}
 	return gcm, nil
 }
@@ -90,25 +90,25 @@ var messageAlgKeyLens = map[string]int{
 func parseDekPayload(payload string) (dekPayload, error) {
 	parts := strings.Split(payload, "$")
 	if len(parts) != 3 {
-		return dekPayload{}, newError(CodeProtocol, "DEK 载荷须为 alg$key$iv 三段，实际 %d 段", len(parts))
+		return dekPayload{}, newError(CodeParse, "DEK 载荷须为 alg$key$iv 三段，实际 %d 段", len(parts))
 	}
 	keyLen, ok := messageAlgKeyLens[parts[0]]
 	if !ok {
-		return dekPayload{}, newError(CodeProtocol, "DEK 载荷 alg %q 不在支持列表（AES-256-GCM/SM4-GCM）", parts[0])
+		return dekPayload{}, newError(CodeParse, "DEK 载荷 alg %q 不在支持列表（AES-256-GCM/SM4-GCM）", parts[0])
 	}
 	key, err := DecodeB64URL(parts[1])
 	if err != nil {
-		return dekPayload{}, newError(CodeProtocol, "DEK 载荷 key 段解码失败")
+		return dekPayload{}, newError(CodeParse, "DEK 载荷 key 段解码失败")
 	}
 	iv, err := DecodeB64URL(parts[2])
 	if err != nil {
-		return dekPayload{}, newError(CodeProtocol, "DEK 载荷 iv 段解码失败")
+		return dekPayload{}, newError(CodeParse, "DEK 载荷 iv 段解码失败")
 	}
 	if len(key) != keyLen {
-		return dekPayload{}, newError(CodeProtocol, "DEK 载荷 alg %s 密钥须 %d 字节，实际 %d", parts[0], keyLen, len(key))
+		return dekPayload{}, newError(CodeParse, "DEK 载荷 alg %s 密钥须 %d 字节，实际 %d", parts[0], keyLen, len(key))
 	}
 	if len(iv) != gcmIVLen {
-		return dekPayload{}, newError(CodeProtocol, "DEK 载荷 iv 须 12 字节，实际 %d", len(iv))
+		return dekPayload{}, newError(CodeParse, "DEK 载荷 iv 须 12 字节，实际 %d", len(iv))
 	}
 	return dekPayload{alg: parts[0], key: key, iv: iv}, nil
 }

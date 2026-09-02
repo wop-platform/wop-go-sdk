@@ -164,7 +164,7 @@ func TestDo_ErrorPaths(t *testing.T) {
 	c2, err := NewClient(func() Config {
 		cfg := testConfig(t, "WOP-RSA3072-SHA256")
 		cfg.Transport = TransportFunc(func(RequestDraft) (TransportResponse, error) {
-			return TransportResponse{}, newError(CodeConfig, "注入的发送失败")
+			return TransportResponse{}, newError(CodeConfiguration, "注入的发送失败")
 		})
 		return cfg
 	}())
@@ -183,15 +183,15 @@ func TestBuildRequest_L2_RandomExhaustionAtCEKAndIV(t *testing.T) {
 	// 恰 16 字节：nonce(16) 成功后 CEK 读取失败
 	_, err := c.BuildRequest("POST", "/x", []byte("data"), Level2,
 		WithRandom(bytes.NewReader(make([]byte, 16))))
-	if err == nil || err.(*Error).Code != CodeConfig {
-		t.Errorf("CEK 读取耗尽应报 CONFIG，实际 %v", err)
+	if err == nil || err.(*Error).Code != CodeConfiguration {
+		t.Errorf("CEK 读取耗尽应报 configuration，实际 %v", err)
 	}
 
 	// 恰 48 字节：nonce(16)+CEK(32) 成功后 IV 读取失败
 	_, err = c.BuildRequest("POST", "/x", []byte("data"), Level2,
 		WithRandom(bytes.NewReader(make([]byte, 48))))
-	if err == nil || err.(*Error).Code != CodeConfig {
-		t.Errorf("IV 读取耗尽应报 CONFIG，实际 %v", err)
+	if err == nil || err.(*Error).Code != CodeConfiguration {
+		t.Errorf("IV 读取耗尽应报 configuration，实际 %v", err)
 	}
 }
 
@@ -202,14 +202,14 @@ func TestParseSM2PrivateKey_ScalarRange(t *testing.T) {
 	dZero := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	if _, err := parseSM2PrivateKey(dZero); err == nil {
 		t.Error("d=0 应拒绝")
-	} else if we, ok := err.(*Error); !ok || we.Code != CodeConfig {
-		t.Errorf("d=0 应为前置 CONFIG 错误（非下游库兜底），实际 %v", err)
+	} else if we, ok := err.(*Error); !ok || we.Code != CodeConfiguration {
+		t.Errorf("d=0 应为前置 configuration 错误（非下游库兜底），实际 %v", err)
 	}
 	dN := base64.StdEncoding.EncodeToString(pad32(n))
 	if _, err := parseSM2PrivateKey(dN); err == nil {
 		t.Error("d=n 应拒绝")
-	} else if we, ok := err.(*Error); !ok || we.Code != CodeConfig {
-		t.Errorf("d=n 应为前置 CONFIG 错误（非下游库兜底），实际 %v", err)
+	} else if we, ok := err.(*Error); !ok || we.Code != CodeConfiguration {
+		t.Errorf("d=n 应为前置 configuration 错误（非下游库兜底），实际 %v", err)
 	}
 	// d=n-1：SDK 前置范围 [1,n-1] 放行；emmansun/gmsm 更严（拒 N-1）。
 	// 库级边界与前置契约正交，仅记录不断言方向。
@@ -225,8 +225,8 @@ func TestDefaultTransport_URLParseError(t *testing.T) {
 	_, err := tr.Send(RequestDraft{Method: "GET", Path: "/x"})
 	if err == nil {
 		t.Error("非法 URL 应失败")
-	} else if err.(*Error).Code != CodeConfig {
-		t.Errorf("错误类 = %s, want CONFIG", err.(*Error).Code)
+	} else if err.(*Error).Code != CodeConfiguration {
+		t.Errorf("错误类 = %s, want configuration", err.(*Error).Code)
 	}
 }
 

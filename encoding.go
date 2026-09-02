@@ -21,11 +21,11 @@ func EncodeB64URL(b []byte) string {
 // 长度非法（%4==1）一律拒绝（F6/F7 负向量锚点）。
 func DecodeB64URL(s string) ([]byte, error) {
 	if strings.ContainsAny(s, "=+/ \t\r\n") {
-		return nil, newError(CodeProtocol, "base64url 串含非法字符（须无填充、URL 字母表）")
+		return nil, newError(CodeParse, "base64url 串含非法字符（须无填充、URL 字母表）")
 	}
 	b, err := b64urlEncoder.Strict().DecodeString(s)
 	if err != nil {
-		return nil, newError(CodeProtocol, "base64url 解码失败：%v", err)
+		return nil, newError(CodeParse, "base64url 解码失败：%v", err)
 	}
 	return b, nil
 }

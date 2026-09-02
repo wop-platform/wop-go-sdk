@@ -55,17 +55,17 @@ func TestParseSuite_Rejects(t *testing.T) {
 		securityReq string
 		code        ErrorCode
 	}{
-		{"", CodeSuiteParse},
-		{"   ", CodeSuiteParse},
-		{"RSA3072-SHA256", CodeSuiteParse},           // 缺 WOP 前缀
-		{"WOP-RSA3072", CodeSuiteParse},              // 非三段
-		{"WOP-RSA3072-SHA256-EXTRA", CodeSuiteParse}, // 四段
-		{"XOP-RSA3072-SHA256", CodeSuiteParse},       // 前缀非 WOP
-		{"WOP-RSA2048-SHA256", CodeSuiteUnsupported}, // 密钥算法不在支持列表
-		{"WOP-ECDSA-SHA256", CodeSuiteUnsupported},
-		{"WOP-RSA3072-SHA512", CodeSuiteUnsupported}, // 摘要算法不在支持列表
-		{"WOP-RSA3072-SM3", CodeSuiteUnsupported},    // 国际密钥+国密摘要，跨族（I5）
-		{"WOP-SM2-SHA256", CodeSuiteUnsupported},     // 国密密钥+国际摘要，跨族（I5）
+		{"", CodeConfiguration},
+		{"   ", CodeConfiguration},
+		{"RSA3072-SHA256", CodeConfiguration},           // 缺 WOP 前缀
+		{"WOP-RSA3072", CodeConfiguration},              // 非三段
+		{"WOP-RSA3072-SHA256-EXTRA", CodeConfiguration}, // 四段
+		{"XOP-RSA3072-SHA256", CodeConfiguration},       // 前缀非 WOP
+		{"WOP-RSA2048-SHA256", CodeConfiguration},       // 密钥算法不在支持列表
+		{"WOP-ECDSA-SHA256", CodeConfiguration},
+		{"WOP-RSA3072-SHA512", CodeConfiguration}, // 摘要算法不在支持列表
+		{"WOP-RSA3072-SM3", CodeConfiguration},    // 国际密钥+国密摘要，跨族（I5）
+		{"WOP-SM2-SHA256", CodeConfiguration},     // 国密密钥+国际摘要，跨族（I5）
 	}
 	for _, tc := range cases {
 		_, err := ParseSuite(tc.securityReq)

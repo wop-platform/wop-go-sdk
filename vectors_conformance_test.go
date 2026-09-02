@@ -67,7 +67,7 @@ func TestVectorConformance_Signature(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sig, err := signMessage(suite, &privKey{rsa: priv}, msg, nil)
+			sig, err := signMessage(suite, &privKey{rsa: priv}, nil, msg, nil)
 			if err != nil {
 				t.Fatalf("%s: %v", sv.ID, err)
 			}
