@@ -3,7 +3,7 @@
     "format": "wop-interop-1",
     "specVersion": "crypto-strategy v0.3 / sdk-spec v1.0-ratified",
     "generatedBy": "wop-go-sdk@0.1.0",
-    "caseCount": 29,
+    "caseCount": 30,
     "note": "TEST-ONLY；verify 方向样本为冻结数据，各仓消费不得重新生成；build 方向按 input 复现"
   },
   "cases": [
@@ -134,7 +134,7 @@
           "x-wop-appkey": "app_interop_001",
           "x-wop-content-digest": "sm3 eb6e82ca5c687173ed2ef6863ced1b11777fdf9d5506b623f0016c65f9245eba",
           "x-wop-nonce": "interop-nonce-0000000000000001",
-          "x-wop-sign": "WOP-SM2-SM3 v1/1800/x-wop-appkey;x-wop-content-digest;x-wop-nonce;x-wop-timestamp/Ji2xoVAeHhaB3sBBuYR1X8HJmgubDSCe5L3jY5YnQV_baZK81sWXDgvwB99xWXpKQ0sRTsGE4t-a3jiyG8sN5w",
+          "x-wop-sign": "WOP-SM2-SM3 v1/1800/x-wop-appkey;x-wop-content-digest;x-wop-nonce;x-wop-timestamp/KrBlUS4gcvC_-L81xANkl9WbpuWuwGJp7OnqbhYNgD6SLX4NKNQRTPfM3xtF6olQkRI1zi3hRxwM7m5CwJ1vmw",
           "x-wop-timestamp": "1755900000000"
         },
         "opaque": [
@@ -164,7 +164,7 @@
           "x-wop-content-digest": "sm3 76fc43b75677a3bf17aec0a3540e05b343a9aa5bd7f6b8a4b9ef6d01caa082c2",
           "x-wop-encrypt": "L2;dek=BBEa_sIFCIl7PAQoYU-aJFKxt2rM32okXmynLjG7D7qgkw2up958_eNzo7kRgwKq9hV4NlcXCNMDbDxgIPN7lLD8bkGNFCK2nwv11ML4oGQZzZvv2jA9symDuat92WY8y7TlbQWVNwDqkIVHCMpoxTH5JynDYOh9r8XeCHUEGxF0UeWd3vZJmYMg8-UOJ-ZP",
           "x-wop-nonce": "interop-nonce-0000000000000001",
-          "x-wop-sign": "WOP-SM2-SM3 v1/1800/x-wop-appkey;x-wop-content-digest;x-wop-encrypt;x-wop-nonce;x-wop-timestamp/AdE1xmar8_3bYLN-YvfrK537v01qqNtmWwN9zeux-BFlazoJDpG0HVjAiK__1Q9pfIFNifeP9llnfakcNIb2Cg",
+          "x-wop-sign": "WOP-SM2-SM3 v1/1800/x-wop-appkey;x-wop-content-digest;x-wop-encrypt;x-wop-nonce;x-wop-timestamp/J1viyVsWPn3-IZy0Q_D-6UTUNrbmyBCfhzNWu9JucFn8mk5gfqnICgHTa9vunyjJ4HkO4OWOrk1X-POOQucV7A",
           "x-wop-timestamp": "1755900000000"
         },
         "opaque": [
@@ -666,6 +666,29 @@
           "X-Wop-Timestamp": "1755900000000"
         },
         "wireBodyB64": ""
+      },
+      "expect": {
+        "ok": false,
+        "errorClass": "protocol"
+      }
+    },
+    {
+      "id": "n17-encrypt-missing-dek",
+      "kind": "verify-negative",
+      "suite": "WOP-RSA3072-SHA256",
+      "level": "L2",
+      "response": {
+        "method": "POST",
+        "path": "/gateway/interop.echo",
+        "appKey": "app_interop_001",
+        "headers": {
+          "X-Wop-Content-Digest": "sha-256 6ef28c57955ee7db10e90098046d9e8dcdbb1757e5eb7c4a9828f69397aeb37b",
+          "X-Wop-Encrypt": "L2",
+          "X-Wop-Nonce": "interop-resp-nonce-0001",
+          "X-Wop-Sign": "WOP-RSA3072-SHA256 v1/1800/x-wop-content-digest;x-wop-encrypt;x-wop-nonce;x-wop-timestamp/em8KvYeSvAdH4yfRfoIqbxnTj8AlvENZP_yMxWLsXN9ERHEXj7ryMls34fQiM15RRbxHy-UE8Uo1GKmfySMF1i8bAXso-GDEXN2OmK9Veq9RDPIYKp9PK0Bef36nDWhQ91znYdXtmIzieltnH7wj3xg2mFvOwqV0mvI0e45PfFxevCDGaLaY0OjT3mKNMS4C6D-fYnFicjEw1mSrCLnavEk9J_7rleW96wKwia-NdsZBm2PFBOL4h21W8_1hEfTJRtTO9-AD1xnbY2yEfpAlMcw00Xq1ADVwr2CiHHTG3ZUDz2g-VmmrK0yj0tujyBf3qfHK0A1q23lA6ZZh1H7bQW7a_r-4QIlruRkDf7u86vayqU8JvQKYSm1NlvBIFIe5MpfiC5bqJ-uaONEvpBqwPMtQWR5UAkPB17Hkn_6q04ublfvVVy85-lL2UTsbfvNvt_O8Q8RZFbVmPqXCukrv17If1HpKGT9REzrEk_1hys0CHfyN2WIvPH9-hUOWJy4O",
+          "X-Wop-Timestamp": "1755900000000"
+        },
+        "wireBodyB64": "eyJlbmNyeXB0ZWQiOiJLd3lGTlg5ZmR0M3pPNDcwT3NnemYwSjBQQUoyWVp3ZGgtSldnVlRCalZ3M3BTS1hQZyJ9"
       },
       "expect": {
         "ok": false,
