@@ -1,6 +1,11 @@
 # Sourcery 规则保留清单（显式化"评论清零"的边界）。
 # 2026-08-31 评审确认的保留项：
 # - no-loop-in-tests / no-conditionals-in-tests：测试内循环/条件断言是惯用法
+# 2026-09-03 对齐追加（awesome-rules 工具链接入门禁触发）：
+# - low-code-quality：上游 2026-09-01 评审确认保留（awesome-rules .sourcery.yaml
+#   同款 disable，dotnet/python/php 已对齐）；触发点为 .lefthook/spec_check.py 的
+#   extract_test_tags/main 主流程编排函数——复杂度是分发工具本质，拆分收益边际
+#   且会被 tools/git/install.sh --update 覆盖冲掉。对齐处置而非重演评审。
 # 其余规则全开；新增触发点由 CI gate（sourcery-review-gate.yml）拦截。
 version: '1'
 
@@ -17,6 +22,11 @@ ignore:
 - dist
 - coverage
 - StrykerOutput
+# awesome-rules 治理分发镜像（tools/git/install.sh --update 会整体覆盖刷新）：
+# 本仓不拥有其代码演进，评审责任在 awesome-rules 仓，本仓评审豁免
+- .lefthook
+- commitlint.config.js
+- .versionrc.js
 
 rule_settings:
   enable:
@@ -24,6 +34,7 @@ rule_settings:
   disable:
   - no-loop-in-tests
   - no-conditionals-in-tests
+  - low-code-quality
   rule_types:
   - refactoring
   - suggestion
