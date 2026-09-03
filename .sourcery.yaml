@@ -25,6 +25,8 @@ ignore:
 # awesome-rules 治理分发镜像（tools/git/install.sh --update 会整体覆盖刷新）：
 # 本仓不拥有其代码演进，评审责任在 awesome-rules 仓，本仓评审豁免
 - .lefthook
+- commitlint.config.js
+- .versionrc.js
 
 rule_settings:
   enable:
