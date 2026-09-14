@@ -2,7 +2,7 @@
 // canonicalRequest、结构化签名、content-digest、L2 数字信封、验签解密）
 // 与 HTTP 适配层，商户无需理解线上字节格式即可安全对接网关。
 //
-// 协议真源：gtsp-wop-gateway/docs/crypto-strategy-spec.md（v0.3-reviewed）
+// 协议真源：wop-specs/crypto/crypto-strategy-spec.md（v0.3-reviewed）
 // 与 docs/wop-sdk-spec.md（v1.0-ratified）。全部二进制线上编码为
 // base64url 无填充（拒收 '='），十六进制统一小写。
 //
