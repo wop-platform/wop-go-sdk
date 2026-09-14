@@ -1,6 +1,6 @@
 # MISSION — wop-go-sdk 工厂使命（治理文件）
 
-> 状态：S0 草案 v0.1（2026-08-29，移植自 gtsp-wop-gateway .factory——黑盒工厂分发）。
+> 状态：S0 草案 v0.1（2026-08-29，移植自 内部网关仓 .factory——黑盒工厂分发）。
 > 本文件属于治理层：**工厂永不可修改**（铁律 3，由 `.factory/guard.py` 机械化执行）。
 > 平台：GitHub——issue = GitHub issue，PR = pull request；
 > 经 `.factory/hosting.py` 适配（ADR-008）。
