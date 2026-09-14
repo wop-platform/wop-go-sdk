@@ -11,6 +11,8 @@
 [![Gherkin](https://img.shields.io/badge/bdd-18%20scenarios-orange)](features/wop_gateway.feature)
 ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/wop-platform/wop-go-sdk?utm_source=oss&utm_medium=github&utm_campaign=wop-platform%2Fwop-go-sdk&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
+> **WOP · 万联易达开放平台** 官方 Go SDK —— 协议与黄金向量真源：[wop-specs](https://github.com/wop-platform/wop-specs)
+
 WOP 网关商户侧官方 Go 客户端库：封装协议核心（套件解析、canonicalRequest、结构化签名、
 content-digest、L2 数字信封、验签解密）与 HTTP 适配层，商户无需理解线上字节格式即可安全对接。
 
@@ -146,6 +148,16 @@ tr := wop.RoundTripperTransport(myRoundTripper, baseURL)
 // 函数适配（测试 mock）
 tr := wop.TransportFunc(func(d wop.RequestDraft) (wop.TransportResponse, error) { ... })
 ```
+
+## 🧩 WOP 生态导航 | Ecosystem
+
+| 类别 | 组件 |
+|------|------|
+| 协议与向量真源 | [wop-specs](https://github.com/wop-platform/wop-specs) —— crypto-strategy-spec · wop-sdk-spec · 黄金测试向量 |
+| 官方 SDK（六语言） | [Java](https://github.com/wop-platform/wop-java-sdk) · [Go](https://github.com/wop-platform/wop-go-sdk) · [Python](https://github.com/wop-platform/wop-python-sdk) · [PHP](https://github.com/wop-platform/wop-php-sdk) · [.NET](https://github.com/wop-platform/wop-dotnet-sdk) · [TypeScript](https://github.com/wop-platform/wop-typescript-sdk) |
+| 浏览器工作台 | [wop-web-tools](https://github.com/wop-platform/wop-web-tools) —— 密钥生成 · 报文联调 · 国密 · 六语言代码片段 |
+| Agent 技能包 | [wop-skills](https://github.com/wop-platform/wop-skills) —— 零代码调用 · 联调对拍 · 62 错误码排错 |
+| 平台服务（企业内部） | 统一接入网关 · 核心逻辑服务 · 回调服务 · 开发者门户 · 文档中心 |
 
 ## License
 
