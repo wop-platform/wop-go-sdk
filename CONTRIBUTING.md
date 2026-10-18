@@ -110,7 +110,7 @@ go run golang.org/x/exp/cmd/apidiff -m -allow-internal /tmp/old.golden .
 - 格式：`gofmt` 零 diff；静态检查：`go vet ./...` 零告警。遵循 Go 官方惯例：
   error 显式返回值、导出符号带 doc comment、包级公共 API 保持精简。
 - 协议语义必须与 spec 功能面对齐：
-  - **F1** 套件配置与解析：三套件白名单（`WOP-RSA3072-SHA256` / `WOP-RSA4096-SHA256` / `WOP-SM2-SM3`），跨族/非法拒绝
+  - **F1** 套件配置与解析：四套件白名单（`WOP-RSA2048-SHA256` / `WOP-RSA3072-SHA256` / `WOP-RSA4096-SHA256` / `WOP-SM2-SM3`），跨族/非法拒绝
   - **F2** canonicalRequest：5 段 `\n`；header 值 Java-URLEncoder 语义（空格→`%20` 等）
   - **F3** 结构化 `x-wop-sign`：商户私钥加签（出向），平台公钥验签（响应与回调）
   - **F4** `x-wop-content-digest`：`alg 小写hex` 恰一空格；算法随套件族；无 body 缺席（D2）；有 body 必传必入签（I1）

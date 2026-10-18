@@ -17,7 +17,7 @@ L2 digital envelope, verify-and-decrypt) plus a pluggable HTTP layer, so merchan
 integrate without touching the wire formats.
 
 - Protocol sources of truth: `crypto-strategy-spec.md` (v0.3-reviewed) + `wop-sdk-spec.md` (v1.0-ratified)
-- All three suites: `WOP-RSA3072-SHA256` / `WOP-RSA4096-SHA256` (crypto/rsa) and
+- All four suites: `WOP-RSA2048-SHA256` / `WOP-RSA3072-SHA256` / `WOP-RSA4096-SHA256` (crypto/rsa) and
   `WOP-SM2-SM3` (emmansun/gmsm)
 - Zero non-whitelisted dependencies: the only runtime dependency is
   [emmansun/gmsm](https://github.com/emmansun/gmsm) (the designated SM library — do NOT use
@@ -122,7 +122,7 @@ go tool cover -func=cover.out | grep total                # statement coverage �
 
 Coverage (spec appendix B.2 / D9):
 
-- Positive vectors, byte-level: SHA-256/SM3 digests, RSA3072/4096 signatures
+- Positive vectors, byte-level: SHA-256/SM3 digests, RSA2048/3072/4096 signatures
   (deterministic PKCS#1 v1.5), SM2 fixed-k signature (bare r‖s) and encryption (C1C3C2),
   AES-256-GCM / SM4-GCM (ciphertext‖tag), OAEP unwrap, DEK payload assembly
 - Negative vectors, all rejected: MGF1-SHA1 trap ciphertext (the #1 cross-language drift

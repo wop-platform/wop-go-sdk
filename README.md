@@ -18,7 +18,7 @@ content-digest、L2 数字信封、验签解密）与 HTTP 适配层，商户无
 
 - 协议真源：[crypto-strategy-spec.md](https://github.com/wop-platform/wop-specs/blob/main/crypto/crypto-strategy-spec.md)（v0.3-reviewed）+ [wop-sdk-spec.md](https://github.com/wop-platform/wop-specs/blob/main/sdk/wop-sdk-spec.md)（v1.0-ratified）
 - 向量真源：[crypto-vectors.json](https://github.com/wop-platform/wop-specs/blob/main/crypto/crypto-vectors.json)（本仓 fixture 为字节级副本，禁手改）
-- 三套件全支持：`WOP-RSA3072-SHA256` / `WOP-RSA4096-SHA256`（crypto/rsa）与 `WOP-SM2-SM3`（emmansun/gmsm）
+- 四套件全支持：`WOP-RSA2048-SHA256` / `WOP-RSA3072-SHA256` / `WOP-RSA4096-SHA256`（crypto/rsa）与 `WOP-SM2-SM3`（emmansun/gmsm）
 - 零非白名单依赖：运行时依赖仅 [emmansun/gmsm](https://github.com/emmansun/gmsm)（国密算法唯一指定路径，勿用 tjfoc/gmsm——无 GCM）
 
 ## 快速开始
@@ -117,7 +117,7 @@ go tool cover -func=cover.out | grep total                # 语句覆盖率 ≥9
 
 覆盖面（spec 附录 B.2 / D9）：
 
-- 正向量字节级：SHA-256/SM3 摘要、RSA3072/4096 签名（PKCS#1 v1.5 确定性）、
+- 正向量字节级：SHA-256/SM3 摘要、RSA2048/3072/4096 签名（PKCS#1 v1.5 确定性）、
   SM2 fixed-k 签名（裸 r‖s）与加密（C1C3C2）、AES-256-GCM / SM4-GCM（ciphertext‖tag）、
   OAEP 解包、DEK 载荷组装
 - 负向量全拒：MGF1-SHA1 陷阱密文（F2 头号跨语言漂移源）、C1C2C3 旧国标顺序、
