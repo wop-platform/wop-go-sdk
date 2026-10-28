@@ -78,6 +78,27 @@ if !res.OK {
 handle(res.Plaintext)
 ```
 
+## ISV Sub-Merchant Identity (ISV D-13)
+
+When calling business APIs on behalf of a sub-merchant, pass `WithSubMchID` per request
+(value = the sub-merchant's `plf_co_id`):
+
+```go
+_, err := client.BuildRequest("POST", "/gateway/order/create", body, wop.Level0,
+	wop.WithSubMchID("PLF-SUB-001"))
+// one-shot:
+_, _, err = client.Do("POST", "/gateway/order/create", body, wop.Level0,
+	wop.WithSubMchID("PLF-SUB-001"))
+```
+
+The SDK writes `x-wop-sub-mch-id` before signing and includes it in the `x-wop-sign`
+signedHeaders. Leading/trailing whitespace is trimmed; the value must be printable ASCII
+(0x20–0x7E), contain no internal whitespace, and be at most 128 characters — violations
+return `wop.Error` (`CodeConfiguration`). Omitting it (or passing blank) keeps the app's
+own identity: the header is absent and the header set/signature are byte-identical to
+earlier versions (AC-20). The header takes effect only when the gateway sub-merchant gray
+gate is open for the app and the app is an ISV app (`app_type=20`).
+
 ## Key Preparation (D12 distribution contract)
 
 | Key | Format | Notes |

@@ -75,6 +75,24 @@ if !res.OK {
 handle(res.Plaintext)
 ```
 
+## ISV 子商户身份（ISV D-13）
+
+代子商户调用业务 API 时，按请求传 `WithSubMchID`（值 = 子商户 `plf_co_id`）：
+
+```go
+_, err := client.BuildRequest("POST", "/gateway/order/create", body, wop.Level0,
+	wop.WithSubMchID("PLF-SUB-001"))
+// 一站式调用：
+_, _, err = client.Do("POST", "/gateway/order/create", body, wop.Level0,
+	wop.WithSubMchID("PLF-SUB-001"))
+```
+
+SDK 在签名前写入 `x-wop-sub-mch-id`，并自动纳入 `x-wop-sign` 的 signedHeaders。
+首尾空白 trim 后发送；仅接受可打印 ASCII（0x20–0x7E）、无内部空白、≤128 字符，
+违规返回 `wop.Error`（`CodeConfiguration`）。不传或纯空白 = 应用自身身份，头缺席，
+请求头集合与签名与旧版逐字节一致（AC-20）。该头仅在网关子商户灰度放行且应用为
+ISV 应用（`app_type=20`）时生效。
+
 ## 密钥准备（D12 分发契约）
 
 | 密钥 | 格式 | 说明 |
@@ -170,7 +188,8 @@ tr := wop.TransportFunc(func(d wop.RequestDraft) (wop.TransportResponse, error) 
   但当前版本候选集仅主网关 `serverRoot`，这两个字段**暂不改变请求行为**。
   密钥轮换重置请用 `config.ClearCache()` + `ResetDefault()`（K26）。
 - **请求级覆盖（凭证/超时/主网关地址）属 P1 目标，尚未实现**：本版零实现，
-  当前请求级选项仅支持 `x-wop-request-id` 透传（附录 I，`WithRequestID`）。
+  当前请求级选项支持 `x-wop-request-id` 透传（附录 I，`WithRequestID`）与
+  ISV 子商户身份头（D-13，`WithSubMchID`）。
 
 ## 🧩 WOP 生态导航 | Ecosystem
 

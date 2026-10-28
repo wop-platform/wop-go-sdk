@@ -140,6 +140,10 @@ type RequestOptions struct {
 	// 须为不含个人数据的不透明关联标识）。空/空白 → 缺省生成 UUID 去连字符（头恒存在）；
 	// 显式传值 trim 后原值上行；控制字符（trim 前扫描）与超长（trim 后 UTF-8 字节 > 128）即拒。
 	RequestID string
+	// SubMchID ISV 子商户身份（ISV D-13）：值 = 子商户 plf_co_id，签名前写入
+	// x-wop-sub-mch-id 并自动纳入 signedHeaders；空/空白 = 应用自身身份（头缺席，AC-20）。
+	// 须为可打印 ASCII、无内部空白、trim 后 ≤ 128 字符，违规构造即拒。
+	SubMchID string
 }
 
 // RequestOption 单个选项。
@@ -165,6 +169,11 @@ func WithRequestID(id string) RequestOption {
 	return func(o *RequestOptions) { o.RequestID = id }
 }
 
+// WithSubMchID 指定 ISV 子商户身份（ISV D-13；值 = plf_co_id；空/空白 → 头缺席）。
+func WithSubMchID(id string) RequestOption {
+	return func(o *RequestOptions) { o.SubMchID = id }
+}
+
 // BuildRequest 构造已签名（L2 时已加密）的请求草稿（spec §2 buildRequest）。
 // 纯计算、零网络 IO；除 CSPRNG 值外同输入同输出。
 func (c *Client) BuildRequest(method, path string, body []byte, level Level, opts ...RequestOption) (RequestDraft, error) {
@@ -182,6 +191,11 @@ func (c *Client) BuildRequest(method, path string, body []byte, level Level, opt
 	}
 	// 附录 I/I2：requestId 构造即校验（fail-fast，不延迟到发送前）
 	resolvedRequestID, hasRequestID, err := resolveRequestID(options.RequestID)
+	if err != nil {
+		return RequestDraft{}, err
+	}
+	// ISV D-13：subMchId 同样构造即校验
+	resolvedSubMchID, hasSubMchID, err := resolveSubMchID(options.SubMchID)
 	if err != nil {
 		return RequestDraft{}, err
 	}
@@ -206,6 +220,10 @@ func (c *Client) BuildRequest(method, path string, body []byte, level Level, opt
 			return RequestDraft{}, newError(CodeConfiguration, "nonce 生成失败：%v", err)
 		}
 		headers[HeaderNonce] = hex.EncodeToString(nonceBytes)
+	}
+	// ISV D-13：签名前写入，signedHeaders 自动包含；缺席时头集合与旧行为完全一致
+	if hasSubMchID {
+		headers[HeaderSubMchID] = resolvedSubMchID
 	}
 
 	var wireBody []byte
