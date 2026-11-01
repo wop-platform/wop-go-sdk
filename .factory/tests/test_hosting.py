@@ -11,9 +11,12 @@
 （conftest 注入 .factory 到 sys.path）
 """
 import json
+import os
 import re
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -94,12 +97,70 @@ class TestGithubCommands:
         args = [c for c in calls if c[0][:2] == ("issue", "edit")][0][0]
         assert "--remove-label" not in args  # bash 3.2 空参守卫的 py 侧等价
 
+    def test_set_labels_false_negative_reconciles(self):
+        """#207 实证形态：gh edit 非零但标签已落服务端（mutation
+        landed + client reported failure）——失败路径重读标签态，
+        目标已达成即幂等成功，裁决不被传输层误报否决。"""
+        calls = []
+        ad = hosting.GitHubAdapter()
+        ad.slug = lambda o=None: "o/r"
+
+        def fake_gh(args, repo_override=None, stdin=None):
+            calls.append(tuple(args))
+            if args[:2] == ["issue", "edit"]:
+                return _cp(rc=1, err="gh: POST api.github.com: 502")
+            return _cp(out=json.dumps(
+                {"labels": [{"name": "factory:rejected"}]}))
+        ad._gh = fake_gh
+        assert ad.issue_set_labels(9, add=["factory:rejected"],
+                                   remove=["factory:triaging"]) is True
+        assert calls[1][:2] == ("issue", "view")  # 复核是读路径
+
+    def test_set_labels_true_failure_raises(self):
+        """复核确证目标未达成 → 原 fail-closed 透传（和解不吞真失败）。"""
+        ad = hosting.GitHubAdapter()
+        ad.slug = lambda o=None: "o/r"
+
+        def fake_gh(args, repo_override=None, stdin=None):
+            if args[:2] == ["issue", "edit"]:
+                return _cp(rc=1, err="boom")
+            return _cp(out=json.dumps(
+                {"labels": [{"name": "factory:triaging"}]}))
+        ad._gh = fake_gh
+        with pytest.raises(hosting.HostingError):
+            ad.issue_set_labels(9, add=["factory:rejected"])
+
+    def test_set_labels_readback_failure_raises(self):
+        """复核读自身失败（网络仍断）→ 不视作已落定，fail-closed。"""
+        ad = hosting.GitHubAdapter()
+        ad.slug = lambda o=None: "o/r"
+        ad._gh = lambda a, r=None, s=None: _cp(rc=1, err="still down")
+        with pytest.raises(hosting.HostingError):
+            ad.issue_set_labels(9, add=["factory:rejected"])
+
+    def test_pr_set_labels_false_negative_reconciles(self):
+        """PR 侧镜像：同构假阴性和解（pr view 重读标签态）。"""
+        calls = []
+        ad = hosting.GitHubAdapter()
+        ad.slug = lambda o=None: "o/r"
+
+        def fake_gh(args, repo_override=None, stdin=None):
+            calls.append(tuple(args))
+            if args[:2] == ["pr", "edit"]:
+                return _cp(rc=1, err="gh: 502")
+            return _cp(out=json.dumps(
+                {"labels": [{"name": "factory:in-progress"}]}))
+        ad._gh = fake_gh
+        assert ad.pr_set_labels(12, add=["factory:in-progress"]) is True
+        assert calls[1][:2] == ("pr", "view")
+
     def test_pr_create_overrides_repo(self):
         calls = []
         ad = self._ad(calls)
         ad._gh = lambda args, repo_override=None, stdin=None: (
             calls.append((tuple(args), repo_override)) or _cp(out="https://x/pull/12"))
-        out = ad.pr_create("br", "t", "b", label="l", repo="up/stream")
+        out = ad.pr_create("br", "t", "b", label="l", base="main",
+                           repo="up/stream")
         assert out["number"] == 12
         assert calls[0][1] == "up/stream"  # feedback-upstream 的上游仓显式覆盖
 
@@ -120,7 +181,53 @@ class TestGithubCommands:
         assert hist == [{"op": "add", "label": "factory:needs-fix"},
                         {"op": "remove", "label": "factory:needs-fix"},
                         {"op": "add", "label": "other"}]
+    def test_pr_create_requires_explicit_base(self):
+        """CodeRabbit E（GitHub 侧镜像 codeup）：--base 显式必填——gh
+        猜默认分支（默认分支因仓而异）会静默落错基线；缺省 raise
+        HostingError code=2（fail-closed，绝不条件拼接静默省略）。"""
+        ad = hosting.GitHubAdapter()
+        ad.slug = lambda o=None: "o/r"
+        with pytest.raises(hosting.HostingError) as e:
+            ad.pr_create("br", "t", "b")
+        assert e.value.code == 2
+        assert "--base" in str(e.value)
 
+    def test_pr_create_explicit_base_into_gh_args(self):
+        """显式 base 进 gh 参数（args 含 --base 且后一位为主干名）——
+        宿主脚本（feedback-upstream/upstream-sync-check）base 落点锚。"""
+        calls = []
+        ad = self._ad(calls)
+        ad._gh = lambda args, repo_override=None, stdin=None: (
+            calls.append((tuple(args), repo_override)) or _cp(out="https://x/pull/12"))
+        assert ad.pr_create("br", "t", "b", base="main")["number"] == 12
+        args = calls[0][0]
+        assert args[args.index("--base") + 1] == "main"
+
+    def test_auth_diagnose_reports_gh_stderr(self):
+        """auth 失败留痕：gh auth status 原始 stderr 返回（可回溯诊断）。"""
+        ad = hosting.GitHubAdapter()
+        orig = subprocess.run
+        hosting.subprocess.run = lambda *a, **k: _cp(rc=1, err="auth failed: bad keyring")
+        try:
+            diag = ad.auth_diagnose()
+        finally:
+            hosting.subprocess.run = orig
+        assert diag == "auth failed: bad keyring"
+
+    def test_auth_diagnose_gh_missing_from_path(self):
+        """无 gh CLI → 诊断标明环境缺失（区别于凭据/网络失败）。"""
+        ad = hosting.GitHubAdapter()
+        orig = subprocess.run
+
+        def _boom(*a, **k):
+            raise FileNotFoundError
+
+        hosting.subprocess.run = _boom
+        try:
+            diag = ad.auth_diagnose()
+        finally:
+            hosting.subprocess.run = orig
+        assert "gh CLI 不在 PATH" in diag
 
 # ── Codeup：请求形状 + 缺口 fail-closed ────────────────────────────
 
@@ -167,6 +274,8 @@ class TestCodeupShapes:
         """类标 Link POST 失败 → 降级告警不冒泡（skills#12 审查收口：标记
         评论已承载状态机语义，Link 仅平台原生补充——对齐 _label_id 降级）。"""
         ad = self._ad({
+            # add 幂等预检（php#17）：无既有未 resolved 标记 → 发标记评论
+            ("POST", "/comments/list"): {"result": []},
             ("POST", "/changeRequests/3/comments"): {"result": {"id": "c1"}},
             ("GET", "/labels"): [{"name": "factory:needs-review", "id": 7}],
             # 故意不路由 POST .../labels → fake_req 抛 HostingError → 降级
@@ -239,6 +348,7 @@ class TestCodeupShapes:
         ad = self._ad({
             ("GET", "/labels"): {"result": [
                 {"id": "lbl-9", "name": "factory:needs-review"}]},
+            ("POST", "/comments/list"): {"result": []},
             # #66 标记模型：add 先发标记评论，类标 Link 为补充载体
             ("POST", "/comments"): {"success": True},
             ("POST", "/changeRequests/7/labels"): {"success": True}}, monkeypatch)
@@ -249,6 +359,39 @@ class TestCodeupShapes:
         assert marker[2]["resolved"] is False
         link = [s for s in ad.seen if s[0] == "POST" and "labels" in s[1]][0]
         assert link[2] == {"labelIdList": ["lbl-9"]}  # live 破案键名（labelIds 拒）
+
+    def test_pr_create_requires_base_fail_closed(self, monkeypatch):
+        """Codeup pr create 缺 --base fail-closed（web-tools#5 Sourcery）：
+        targetBranch 因仓而异（master/main 均有实仓），猜默认会静默落错
+        基线；显式 base 透传 targetBranch。"""
+        ad = self._ad({("POST", "/changeRequests"): {
+            "result": {"localId": 9, "detailUrl": "u"}}}, monkeypatch)
+        with pytest.raises(hosting.HostingError) as e:
+            ad.pr_create("br", "t", "b")
+        assert e.value.code == 2
+        assert "--base" in str(e.value)
+        assert ad.pr_create("br", "t", "b", base="release/x") == {
+            "number": 9, "url": "u"}
+        assert ad.seen[0][2]["targetBranch"] == "release/x"
+
+    def test_space_id_maps_path_namespace(self, monkeypatch, tmp_path):
+        """namespace = remote path 首段（php#17 Sourcery）：
+        gtsp/open-platform/<repo> 的中间层不是 namespace，旧 [1] 索引
+        永不命中 conf 键；单段 path（无 namespace 层）fail-closed。"""
+        conf = tmp_path / "spaces.conf"
+        conf.write_text("gtsp|SID-1\n", encoding="utf-8")
+        monkeypatch.setenv("YUNXIAO_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("CODEUP_ORG_ID", "org")
+        monkeypatch.setenv("CODEUP_REPO_ID", "42")
+        monkeypatch.setenv("FACTORY_SPACES_CONF", str(conf))
+        monkeypatch.delenv("CODEUP_SPACE_ID", raising=False)
+        ad = hosting.CodeupAdapter()
+        ad._remote = lambda: ("610b3c9d", "gtsp/open-platform/gtsp-xx-gateway")
+        assert ad._space_id() == "SID-1"
+        ad._remote = lambda: ("610b3c9d", "plain-repo")
+        with pytest.raises(hosting.HostingError) as e:
+            ad._space_id()
+        assert e.value.code == 2
 
 
 class TestCodeupGaps:
@@ -312,6 +455,18 @@ class TestCodeupMarkerModel:
         assert not [s for s in ad.seen if s[0] == "PUT"]
         assert "幂等跳过" in capsys.readouterr().err
 
+    def test_add_idempotent_existing_marker(self, monkeypatch, capsys):
+        """add 幂等（php#17 Sourcery）：已有同名未 resolved 标记 → 跳过
+        POST 不堆重复；类标 Link 仍 best-effort（未路由路径走 _ad 兜底
+        空列表 → 降级告警，不影响 True 契约）。"""
+        ad = self._ad(monkeypatch, {False: [
+            {"id": "c-1", "content": "[factory:label:add] factory:needs-review"}]})
+        assert ad.pr_set_labels(7, add=["factory:needs-review"]) is True
+        posts = [s for s in ad.seen if s[0] == "POST"
+                 and s[1].endswith("/changeRequests/7/comments")]
+        assert not posts  # 未发新标记评论（幂等跳过）
+        assert "幂等跳过" in capsys.readouterr().err
+
     def test_pr_labels_merges_two_carriers(self, monkeypatch):
         """labels = 类标 Link ∪ 未 resolved 标记（两载体合并去重）。"""
         ad = self._ad(monkeypatch, {False: [
@@ -365,6 +520,17 @@ class TestCodeupMarkerModel:
         assert out["review"] != "changes_requested"  # 载体缺席不得误报打回
         assert "降级空集" in capsys.readouterr().err
 
+    def test_marker_label_prefix_only_returns_empty(self, monkeypatch):
+        """CodeRabbit xx-skills#14：标记评论恰为前缀/前缀+空白时切片为空，
+        旧实现 splitlines()[0] 抛 IndexError（平台开放输入不可约束）——
+        空标记按无标记处理，不越过 HostingError 边界。"""
+        ad = self._ad(monkeypatch, {})
+        assert ad._marker_label("[factory:label:add] ") == ""
+        assert ad._marker_label("[factory:label:add]") == ""
+        # 常规形态不回归
+        assert ad._marker_label(
+            "[factory:label:add] factory:needs-review") == "factory:needs-review"
+
     def test_label_history_resolved_does_not_decrease(self, monkeypatch):
         """轮次语义：resolved 不减计数——全部 add 标记都计入事件流。"""
         ad = self._ad(monkeypatch, {
@@ -373,6 +539,25 @@ class TestCodeupMarkerModel:
         hist = ad.label_history(7)
         assert hist == [{"op": "add", "label": "factory:needs-fix"},
                         {"op": "add", "label": "factory:needs-fix"}]
+
+    def test_label_history_skips_empty_label_markers(self, monkeypatch):
+        """CodeRabbit #119：前缀-only 评论 _marker_label 返回 ""——
+        label_history 不得产出 {"op": "add", "label": ""} 无效事件。"""
+        ad = self._ad(monkeypatch, {False: [
+            {"id": "c-3", "content": "[factory:label:add] "},
+            {"id": "c-4", "content": "[factory:label:add] factory:needs-fix"}]})
+        hist = ad.label_history(7)
+        assert hist == [{"op": "add", "label": "factory:needs-fix"}]
+
+    def test_label_history_ignores_changes_requested_markers(self, monkeypatch):
+        """输入面守卫：#119 walrus 版若删 startswith 过滤（M2 变异），
+        _marker_comments 收的 changes-requested 评论会被 _marker_label 盲切
+        成垃圾 label——label_history 只认 add 前缀，changes-req 评论不产事件。"""
+        ad = self._ad(monkeypatch, {False: [
+            {"id": "c-5", "content": "[factory:changes-requested] 理由"},
+            {"id": "c-6", "content": "[factory:label:add] factory:needs-fix"}]})
+        hist = ad.label_history(7)
+        assert hist == [{"op": "add", "label": "factory:needs-fix"}]
 
     def test_changes_requested_gesture_maps_review(self, monkeypatch):
         """[factory:changes-requested] 评论 → changes_requested（无
@@ -401,7 +586,7 @@ class TestCodeupWorkItemFace:
     WI_DESC = json.dumps({"htmlValue":
                            "<p>正文</p>\n<!-- factory:labels:v1: factory:accepted -->"},
                           ensure_ascii=False)
-    WI = {"result": {"id": "wid1", "serialNumber": "KFPT-18",
+    WI = {"result": {"id": "wid1", "serialNumber": "T-18",
                      "subject": "标题", "logicalStatus": "NORMAL",
                      "description": WI_DESC,
                      "labels": None},
@@ -421,10 +606,10 @@ class TestCodeupWorkItemFace:
                     return payload
             if path.endswith("/comments"):
                 return self.WI["_comments"]
-            if path.endswith("/workitems/KFPT-18") or path.endswith("/workitems/wid1"):
+            if path.endswith("/workitems/T-18") or path.endswith("/workitems/wid1"):
                 return self.WI["result"]
             if path.endswith("/workitems:search"):
-                return {"result": [self.WI["result"], {"id": "wid2", "serialNumber": "KFPT-19",
+                return {"result": [self.WI["result"], {"id": "wid2", "serialNumber": "T-19",
                               "subject": "旧", "logicalStatus": "FINISHED", "description": ""}]}
             raise hosting.HostingError(f"mock 未路由: {method} {path}")
 
@@ -434,8 +619,8 @@ class TestCodeupWorkItemFace:
     def test_issue_view_normalizes_and_strips_marker(self, monkeypatch):
         monkeypatch.setenv("CODEUP_ISSUE_LABELS", "description")
         ad = self._ad(monkeypatch)
-        n = ad.issue_view("KFPT-18")
-        assert n["number"] == "KFPT-18" and n["state"] == "open"
+        n = ad.issue_view("T-18")
+        assert n["number"] == "T-18" and n["state"] == "open"
         assert n["title"] == "标题"
         assert n["body"] == "正文"           # HTML 剥离 + 标记块剥离
         assert "factory:labels" not in n["body"]
@@ -444,14 +629,14 @@ class TestCodeupWorkItemFace:
 
     def test_issue_view_native_labels(self, monkeypatch):
         wi = {**self.WI["result"], "labels": ["factory:rejected"], "description": ""}
-        ad = self._ad(monkeypatch, routes={("GET", "/workitems/KFPT-16"): wi})
-        assert ad.issue_labels("KFPT-16") == ["factory:rejected"]
+        ad = self._ad(monkeypatch, routes={("GET", "/workitems/T-16"): wi})
+        assert ad.issue_labels("T-16") == ["factory:rejected"]
 
     def test_issue_list_paginates_filters_state_and_label(self, monkeypatch):
         monkeypatch.setenv("CODEUP_ISSUE_LABELS", "description")
         ad = self._ad(monkeypatch)
         out = ad.issue_list(state="open", label="factory:accepted", limit=10)
-        assert [i["number"] for i in out] == ["KFPT-18"]  # FINISHED 滤出+label 过滤
+        assert [i["number"] for i in out] == ["T-18"]  # FINISHED 滤出+label 过滤
         m, p, body, _q = ad.seen[0]
         assert (m, p.endswith("/workitems:search")) == ("POST", True)
         assert body["category"] == "Task" and body["spaceId"] == "sp1"  # category 必填（live）
@@ -466,15 +651,15 @@ class TestCodeupWorkItemFace:
 
     def test_issue_set_labels_native_put(self, monkeypatch):
         wi = {**self.WI["result"], "labels": ["keep"]}
-        ad = self._ad(monkeypatch, routes={("GET", "/workitems/KFPT-18"): wi})
-        ad.issue_set_labels("KFPT-18", add=["factory:triaging"], remove=["keep"])
+        ad = self._ad(monkeypatch, routes={("GET", "/workitems/T-18"): wi})
+        ad.issue_set_labels("T-18", add=["factory:triaging"], remove=["keep"])
         put = [s for s in ad.seen if s[0] == "PUT"][-1]
         assert put[2] == {"labels": ["factory:triaging"]}  # 排序去重
 
     def test_issue_set_labels_description_rw(self, monkeypatch):
         monkeypatch.setenv("CODEUP_ISSUE_LABELS", "description")
         ad = self._ad(monkeypatch)
-        ad.issue_set_labels("KFPT-18", add=["factory:in-progress"])
+        ad.issue_set_labels("T-18", add=["factory:in-progress"])
         put = [s for s in ad.seen if s[0] == "PUT"][-1]
         assert put[2]["formatType"] == "MARKDOWN"
         # 读-改-写保留原始载体格式（JSON 串不解包）:原 accepted 保留+新增
@@ -484,7 +669,7 @@ class TestCodeupWorkItemFace:
             '\n\n<!-- factory:labels:v1: factory:accepted factory:in-progress -->')
         # 移除唯一标签 = 块消失,原文保留
         ad2 = self._ad(monkeypatch)
-        ad2.issue_set_labels("KFPT-18", remove=["factory:accepted"])
+        ad2.issue_set_labels("T-18", remove=["factory:accepted"])
         put2 = [s for s in ad2.seen if s[0] == "PUT"][-1]
         assert put2[2]["description"] == '{"htmlValue": "<p>正文</p>\\n"}'
 
@@ -493,11 +678,11 @@ class TestCodeupWorkItemFace:
         ad = self._ad(monkeypatch, routes={
             ("GET", "/workitems/wid1/comments"): [
                 {"author": {"name": "x"}, "content": "<p>旧<!-- m1 --></p>"}]})
-        assert ad.issue_comment("KFPT-18", "回执", marker="m1") is True  # dedupe 命中
+        assert ad.issue_comment("T-18", "回执", marker="m1") is True  # dedupe 命中
         assert "dedupe" in capsys.readouterr().err
         posts = [s for s in ad.seen if s[0] == "POST"]
         assert not posts
-        ad.issue_comment("KFPT-18", "新评论")
+        ad.issue_comment("T-18", "新评论")
         posts = [s for s in ad.seen if s[0] == "POST"]
         assert posts[-1][1].endswith("/workitems/wid1/comments")  # serialNumber→id
         assert posts[-1][2]["contentType"] == "markdown"
@@ -535,13 +720,13 @@ class TestCodeupIssueCreate:
                     raise hosting.HostingError("codeup GET fields HTTP 404: x")
                 return fields if fields is not None else self.FIELDS
             # 【live 2026-08-26】create 响应只含 24-hex id（无 serialNumber/
-            # detailUrl）——KFPT-21 实测；详情回查才有可读编号
+            # detailUrl）——T-21 实测；详情回查才有可读编号
             if method == "POST" and path.endswith("/workitems"):
                 return create_resp or {"result": {"id": "wid123"}}
             if fail_detail:
                 raise hosting.HostingError("codeup GET detail HTTP 500: x")
-            return detail_resp or {"result": {"serialNumber": "KFPT-42",
-                                              "detailUrl": "https://x/KFPT-42"}}
+            return detail_resp or {"result": {"serialNumber": "T-42",
+                                              "detailUrl": "https://x/T-42"}}
 
         ad._req = fake_req
         return ad, calls
@@ -578,7 +763,7 @@ class TestCodeupIssueCreate:
         assert cfvs["6"] == "22"  # list=末档 option id（str）
         assert 1 not in cfvs and "1" not in cfvs  # NativeField 走本体
         assert 7 not in cfvs and "7" not in cfvs  # 非 required 不带
-        assert out == {"number": "KFPT-42", "url": "https://x/KFPT-42"}
+        assert out == {"number": "T-42", "url": "https://x/T-42"}
 
     def test_fields_fetch_failure_degrades_with_warning(self, monkeypatch, capsys):
         ad, calls = self._ad(monkeypatch, fail_fields=True)
@@ -586,7 +771,7 @@ class TestCodeupIssueCreate:
         assert "warn" in capsys.readouterr().err  # 降级可见不静默
         posts = [c for c in calls if c[0] == "POST" and c[1].endswith("/workitems")]
         assert posts and "customFieldValues" not in posts[-1][2]  # POST 仍发出
-        assert out["number"] == "KFPT-42"
+        assert out["number"] == "T-42"
 
     def test_create_returns_serial_via_detail_lookup(self, monkeypatch):
         """live 契约：create 响应仅 24-hex id；serialNumber 由详情回查取得。"""
@@ -595,7 +780,7 @@ class TestCodeupIssueCreate:
         gets = [(m, p) for m, p, _b in calls if m == "GET"]
         assert any(p.endswith("/workitems/wid123") for _m, p in gets), \
             "必须回查详情端点"
-        assert out == {"number": "KFPT-42", "url": "https://x/KFPT-42"}
+        assert out == {"number": "T-42", "url": "https://x/T-42"}
 
     def test_detail_lookup_failure_degrades_to_id(self, monkeypatch, capsys):
         """回查失败降级返回 id + stderr 告警（可读性损失可见，不阻断）。"""
@@ -608,10 +793,10 @@ class TestCodeupIssueCreate:
         """若平台未来在 create 响应补 serialNumber：有 id 仍回查（详情
         是 detailUrl 权威源）；无 id 才直取响应字段。"""
         ad, _calls = self._ad(
-            monkeypatch, create_resp={"result": {"serialNumber": "KFPT-9"}})
+            monkeypatch, create_resp={"result": {"serialNumber": "T-9"}})
         out = ad.issue_create("t", "b")
         # create 无 id → 不回查，直接响应字段
-        assert out["number"] == "KFPT-9"
+        assert out["number"] == "T-9"
 
 
 class TestCodeupEndpointFallback:
@@ -828,3 +1013,178 @@ class TestIssueCreateLabelGate:
                           "## 验收\n- [ ] x", "--label", "factory:accepted"])
         assert e.value.code == 2
         assert "预检未过" in capsys.readouterr().err
+
+class TestRepoSplitRouting:
+    """CodeRabbit D：--repo 双语义拆分（_repo_split）——目录形态（java#29
+    跨仓调用：平台检测用目录真实路径、slug 由该目录 remote 自解析）vs
+    owner/repo slug 形态（检测回退 "."、slug 原样进 ops）。拆分点是
+    「按 cwd 检测选错适配器」与「目录路径误当 slug 进 gh --repo」的
+    共同单点。"""
+
+    def test_split_three_shapes(self, tmp_path, monkeypatch):
+        d = str(tmp_path)
+        assert hosting._repo_split(d) == (d, None)
+        # slug 形态需 FACTORY_HOSTING 锚定（#134）：未设即拒收
+        monkeypatch.delenv("FACTORY_HOSTING", raising=False)
+        with pytest.raises(hosting.HostingError, match="issue #134"):
+            hosting._repo_split("up/stream")
+        monkeypatch.setenv("FACTORY_HOSTING", "github")
+        assert hosting._repo_split("up/stream") == (".", "up/stream")
+        assert hosting._repo_split(None) == (".", None)
+
+    def test_main_slug_repo_detects_dot_passes_slug(self, monkeypatch):
+        """slug 形态（FACTORY_HOSTING 已锚定）：平台检测落在 cwd（"."）；
+        pr view 的 --repo 原样进 ops（gh --repo up/stream 语义）。"""
+        seen = {}
+        monkeypatch.setenv("FACTORY_HOSTING", "github")
+
+        class _Ad:
+            def pr_view(self, p, repo=None):
+                seen["repo"] = repo
+                return {"number": 1}
+
+        monkeypatch.setattr(hosting, "current_adapter", lambda local: (
+            seen.__setitem__("local", local) or _Ad()))
+        hosting.main(["pr", "view", "1", "--repo", "up/stream"])
+        assert seen == {"local": ".", "repo": "up/stream"}
+
+    def test_main_slug_repo_without_hosting_fail_closed(self, monkeypatch, capsys):
+        """slug 形态且 FACTORY_HOSTING 未设：fail-closed exit 2（#134），
+        不得静默按 cwd remote 选适配器（Codeup 仓会被误判 GitHub）。"""
+        monkeypatch.delenv("FACTORY_HOSTING", raising=False)
+        monkeypatch.setattr(hosting, "current_adapter",
+                            lambda local: pytest.fail("不应走到适配器构造"))
+        with pytest.raises(SystemExit) as e:
+            hosting.main(["pr", "view", "1", "--repo", "up/stream"])
+        assert e.value.code == 2
+        assert "issue #134" in capsys.readouterr().err
+
+    def test_main_dir_repo_detects_dir_ops_none(self, monkeypatch, tmp_path):
+        """目录形态：检测用目录真实路径（远端解析/平台选择以其为准）；
+        ops 收 repo=None——目录路径绝不进 gh --repo。"""
+        seen = {}
+        d = str(tmp_path)
+
+        class _Ad:
+            def pr_view(self, p, repo=None):
+                seen["repo"] = repo
+                return {"number": 1}
+
+        monkeypatch.setattr(hosting, "current_adapter", lambda local: (
+            seen.__setitem__("local", local) or _Ad()))
+        hosting.main(["pr", "view", "1", "--repo", d])
+        assert seen == {"local": d, "repo": None}
+
+
+class TestLabelAddCrossProcessLock:
+    """CodeRabbit C：add「预检+POST」跨进程互斥（_add_label_lock）——
+    mkdir 原子占锁 + pid 活性判死接管 + 无 pid 残锁年龄宽限 + 有界等锁
+    fail-closed。缺陷：双进程同仓同 PR 同名 add 各过预检再各 POST =
+    双未 resolved 标记（状态机重复转移）；锁内重预检幂等收敛恰一次
+    POST。"""
+
+    def test_active_owner_timeout_fail_closed(self, monkeypatch, tmp_path):
+        """活主持锁 → 等锁超时 HostingError code=1（fail-closed 拒双
+        写）：不排队不静默放行，宁可链失败重试（重试幂等收敛）。"""
+        monkeypatch.setenv("FACTORY_LOCK_DIR", str(tmp_path))
+        monkeypatch.setattr(hosting, "_LABEL_LOCK_TIMEOUT", 0.2)
+        ad = hosting.CodeupAdapter()
+        lock_dir = hosting._label_lock_dir(".", 7, "factory:needs-review")
+        os.makedirs(lock_dir)
+        Path(lock_dir, "pid").write_text(str(os.getpid()), encoding="ascii")
+        with pytest.raises(hosting.HostingError) as e:
+            with ad._add_label_lock(7, "factory:needs-review"):
+                pass
+        assert e.value.code == 1
+        assert "fail-closed" in str(e.value)
+
+    def test_dead_owner_lock_taken_over(self, monkeypatch, tmp_path):
+        """死者残锁（pid 活性判死）→ 清后接管：with 正常进入、退出清
+        目录——残锁不永久卡链（需人工清锁即锁故障）。"""
+        monkeypatch.setenv("FACTORY_LOCK_DIR", str(tmp_path))
+        ad = hosting.CodeupAdapter()
+        lock_dir = hosting._label_lock_dir(".", 7, "factory:needs-fix")
+        os.makedirs(lock_dir)
+        Path(lock_dir, "pid").write_text("99999999", encoding="ascii")
+        assert hosting._lock_stale(lock_dir, "99999999") is True
+        with ad._add_label_lock(7, "factory:needs-fix"):
+            assert os.path.isdir(lock_dir)  # 持锁期间在位
+        assert not os.path.isdir(lock_dir)  # 退出清理
+
+    def test_pidless_crash_dir_reclaimed_after_grace(self, monkeypatch, tmp_path):
+        """建锁→写 pid 的崩溃窗残锁（无 pid）：年龄超宽限才判死可接管，
+        宽限内按活等（不抢正在建锁的活主）；宽限 0 即刻接管。"""
+        monkeypatch.setenv("FACTORY_LOCK_DIR", str(tmp_path))
+        monkeypatch.setattr(hosting, "_LABEL_LOCK_STALE_GRACE", 0.0)
+        ad = hosting.CodeupAdapter()
+        lock_dir = hosting._label_lock_dir(".", 7, "factory:approved")
+        os.makedirs(lock_dir)  # 无 pid：崩溃窗形态
+        with ad._add_label_lock(7, "factory:approved"):
+            assert os.path.isdir(lock_dir)
+        assert not os.path.isdir(lock_dir)
+
+    def test_parallel_add_posts_exactly_once(self, monkeypatch, tmp_path):
+        """并发回归（核心契约）：两独立适配器实例（双进程/双链形态）
+        同仓同 PR 同名 add 并发——锁串行化 + 后到者锁内重预检幂等跳过，
+        POST comments 恰一次；无锁实现此处必双 POST。"""
+        monkeypatch.setenv("FACTORY_LOCK_DIR", str(tmp_path))
+        # CI 无 YUNXIAO_ACCESS_TOKEN：pr_set_labels 入口校验先于 _req stub 生效
+        monkeypatch.setenv("YUNXIAO_ACCESS_TOKEN", "t")
+        markers = []
+        posts = []
+        barrier = threading.Barrier(2)
+
+        def make_ad():
+            ad = hosting.CodeupAdapter()
+
+            def fake_req(method, path, body=None, query=None,
+                         _retry_rdc=True):
+                if method == "POST" and path.endswith("/comments/list"):
+                    return {"result": [
+                        {"id": f"c-{i}", "content": c}
+                        for i, c in enumerate(markers)]}
+                if method == "POST" and path.endswith("/changeRequests/7/comments"):
+                    posts.append(body["content"])
+                    markers.append(body["content"])
+                    time.sleep(0.05)  # 放大持锁窗：后到线程必撞上等锁
+                    return {"success": True}
+                return {"success": True, "result": []}  # 类标 Link 兜底
+            ad._req = fake_req
+            return ad
+
+        results = []
+
+        def worker():
+            try:
+                barrier.wait()
+                make_ad().pr_set_labels(7, add=["factory:needs-review"])
+                results.append("ok")
+            except Exception as exc:  # 子线程异常收敛进结果，不裸抛
+                results.append(repr(exc))
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert results == ["ok", "ok"]
+        assert len(posts) == 1
+        assert len(markers) == 1
+    def test_huge_garbage_pid_waits_then_fail_closed(self, monkeypatch,
+                                                     tmp_path):
+        """pid 内容超 C int 巨值（损坏写，审查 P3）：按活等不误清、不裸
+        traceback（OverflowError 穿透即破坏 fail-closed docstring 契约），
+        等锁超时抛 code=1。"""
+        monkeypatch.setenv("FACTORY_LOCK_DIR", str(tmp_path))
+        monkeypatch.setattr(hosting, "_LABEL_LOCK_TIMEOUT", 0.2)
+        ad = hosting.CodeupAdapter()
+        lock_dir = hosting._label_lock_dir(".", 7, "factory:needs-human")
+        os.makedirs(lock_dir)
+        Path(lock_dir, "pid").write_text("100000000000000000000",
+                                         encoding="ascii")
+        owner = hosting._lock_owner(lock_dir)
+        assert hosting._lock_stale(lock_dir, owner) is False  # 按活等
+        with pytest.raises(hosting.HostingError) as e:
+            with ad._add_label_lock(7, "factory:needs-human"):
+                pass
+        assert e.value.code == 1

@@ -26,8 +26,11 @@ from gitenv import git_env  # noqa: E402  (tests/ 兄弟模块，pytest rootdir 
 
 FACTORY = Path(__file__).resolve().parents[1]
 
-TRIP_MSG = ("成本熔断（R4）：ledger 累计超 floor 上限，停止派发；"
-            "人工复核 locks/floor.json 与 ledger.jsonl 后方可恢复")
+# D（2026-09-05）：breaker.sh 不再固定包装"成本熔断 ledger 累计超 floor"误导
+# 文案，rc=3 时透传 factory_lib breaker_check 的 CircuitOpen 真实消息
+# （"熔断：今日已跑 N 次" / "熔断：连续失败 N 次…需人工介入"）。
+RUNS_TRIP_MSG = "熔断：今日已跑 1 次（上限 1）"          # TRIP_FLOOR + 1 条今日成功行
+STREAK_TRIP_MSG = "熔断：连续失败 3 次（上限 3），需人工介入"  # FLOOR + 3 连败
 FAIL_CLOSED_MSG = "fail-closed 停止派发"
 FLOOR = {"max_runs_per_day": 10, "max_consecutive_failures": 3}
 TRIP_FLOOR = {"max_runs_per_day": 1, "max_consecutive_failures": 3}
@@ -85,7 +88,16 @@ def _run(cmd: list[str], repo: Path, tmp_path: Path, *, with_stubs: bool,
     env = {"PATH": path, "HOME": os.environ.get("HOME", "/tmp"),
            "GH_REPO": "sandbox/repo", "SENTINEL_MARK": str(tmp_path / "sentinel"),
            "STUB_CALLS": str(tmp_path / "calls"),
+           # 沙箱仓无 origin remote，fix-issue 基线拒猜 fail-closed（#133）
+           # 会在熔断接线前拦截——显式注入 env 级基线，保持测试聚焦接线序
+           "FACTORY_BASE_BRANCH": "main",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    # TZ 透传：_e() 用本进程 date.today() 写台账，breaker 子进程用其自身
+    # date.today() 判「今日」——两边时区不一致时（本机 shell TZ=UTC 而系统
+    # 时区 Asia/Shanghai，UTC 16:00-24:00 窗口两时区跨日）台账日期对不上，
+    # 熔断误放行 rc=0（2026-09-08 实证 4 败；CI 全链 UTC 一致故绿）
+    if "TZ" in os.environ:
+        env["TZ"] = os.environ["TZ"]
     env |= (extra_env or {})
     return subprocess.run(cmd, cwd=repo, env=env, capture_output=True,
                           text=True, timeout=120)
@@ -118,12 +130,12 @@ class TestBreakerGate:
         r = self._gate(tmp_path, json.dumps({"max_runs_per_day": 1, "max_consecutive_failures": 3}),
                        _e(0) + "\n")
         assert r.returncode == 3
-        assert TRIP_MSG in r.stderr
+        assert RUNS_TRIP_MSG in r.stderr
 
     def test_streak_trips_exit_3(self, tmp_path):
         r = self._gate(tmp_path, json.dumps(FLOOR), "".join(_e(1) + "\n" for _ in range(3)))
         assert r.returncode == 3
-        assert TRIP_MSG in r.stderr
+        assert STREAK_TRIP_MSG in r.stderr
         assert "连续失败" in r.stderr  # factory_lib 判定明细先行
 
     def test_pass_silent_exit_0(self, tmp_path):
@@ -166,7 +178,7 @@ class TestDispatchWiring:
     def test_trips_before_any_downstream(self, tmp_path):
         repo, r = self._dispatch(tmp_path, json.dumps(TRIP_FLOOR), _e(0) + "\n")
         assert r.returncode == 3
-        assert TRIP_MSG in r.stderr
+        assert RUNS_TRIP_MSG in r.stderr
         # 死在门口：无 gh 数据面调用（仅启动时的 hosting auth 探测）、无下游脚本
         gh_calls = [ln.rstrip() for ln in _stub_lines(tmp_path) if ln.startswith("gh ")]
         assert gh_calls == ["gh auth status"]  # dispatch_main 的 hosting auth 探测（ADR-008）
@@ -189,6 +201,16 @@ class TestDispatchWiring:
         assert any("pr list" in ln for ln in _stub_lines(tmp_path))  # gh 数据面已触达
 
 
+    def test_auth_failure_attaches_diagnosis(self, tmp_path):
+        """preflight auth 失败留痕（2026-09-05 02:00 事故）：无 gh CLI →
+        exit 2 + stderr 附 auth_diagnose 诊断，日志可回溯环境/凭据归因。"""
+        repo = _sandbox(tmp_path, json.dumps(FLOOR), "")
+        r = _run(["bash", ".factory/dispatch.sh"], repo, tmp_path, with_stubs=False)
+        assert r.returncode == 2
+        assert "托管平台不可用" in r.stderr
+        assert "hosting auth 诊断: gh CLI 不在 PATH" in r.stderr
+        assert "熔断" not in r.stderr
+
 # ---- 3. fix-issue.sh：AI 节点/租约/锁之前 ----
 
 class TestFixIssueWiring:
@@ -200,7 +222,7 @@ class TestFixIssueWiring:
     def test_trips_before_lock_and_gh(self, tmp_path):
         repo, r = self._fix(tmp_path, json.dumps(TRIP_FLOOR), _e(0) + "\n")
         assert r.returncode == 5  # 本地映射码（3 已被锁竞争占用，见接线注释）
-        assert TRIP_MSG in r.stderr
+        assert RUNS_TRIP_MSG in r.stderr
         # 连互斥锁都未占、未到 gh 探测
         assert not (repo / ".factory/locks/dispatcher").exists()
         assert "需要 gh CLI" not in r.stderr
@@ -254,7 +276,7 @@ class TestCronDispatchWiring:
         repo, r = self._cron(tmp_path, json.dumps(TRIP_FLOOR), _e(0) + "\n")
         assert r.returncode == 3
         log = (repo / ".factory/locks/dispatch.log").read_text(encoding="utf-8")
-        assert TRIP_MSG in log  # 停摆信息随块重定向落 dispatch.log
+        assert RUNS_TRIP_MSG in log  # 停摆信息随块重定向落 dispatch.log
         assert _sentinel_hit(tmp_path) == []  # triage-batch / dispatch 均未跑
 
     def test_passes_through_to_both_callees(self, tmp_path):

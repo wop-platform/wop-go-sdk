@@ -82,6 +82,65 @@ class TestParseAgentJson:
         d = parse_agent_json(text, self.VERDICTS)
         assert d["verdict"] == "PASS"
 
+    def test_parse_duplicated_json_blobs(self):
+        """#207 首次尝试实证崩形：裁决 JSON 被整段重复（Extra data:
+        char 429）。旧贪心兜底从首个左花括号拼到末个右花括号再
+        json.loads 必炸；逐偏移 raw_decode 取首个完整对象。"""
+        blob = '{"verdict": "reject", "reasons": ["判据b: 不通过"]}'
+        d = parse_agent_json(blob + blob, {"accept", "reject"})
+        assert d["verdict"] == "reject"
+
+    def test_parse_trailing_prose_with_braces(self):
+        """裸 JSON 后跟含花括号尾文（fence 丢失形态）——旧贪心兜底
+        同样把尾文花括号拼进来；逐偏移扫描在首个合法对象处停。"""
+        text = ('{"verdict": "FAIL", "evidence": "x"}\n'
+                '附注：详见 {附录A} 与 {附录B}')
+        assert parse_agent_json(text, self.VERDICTS)["verdict"] == "FAIL"
+
+    def test_parse_fence_priority_over_earlier_bare(self):
+        """fence 内对象优先于正文更早出现的裸对象——fence 是 LLM
+        显式结构化输出信号（#207 重写后保序语义锚）。"""
+        text = ('{"verdict": "PASS", "evidence": "正文里的裸对象"}\n'
+                '```json\n{"verdict": "FAIL", "evidence": "fence 裁决"}\n```')
+        assert parse_agent_json(text, self.VERDICTS)["verdict"] == "FAIL"
+
+    def test_parse_nested_verdict_not_accepted(self):
+        """PR #211 Sourcery 评论1：外层 verdict 非法时，嵌套对象携带的
+        合法 verdict 不具裁决资格——顶层 fail-closed 契约（防坏裁决借
+        evidence/元数据嵌套混入链），整对象跳过后 ValueError。"""
+        text = '{"verdict": "MAYBE", "evidence": {"verdict": "reject"}}'
+        with pytest.raises(ValueError, match="verdict"):
+            parse_agent_json(text, {"accept", "reject"})
+
+    def test_parse_disallowed_outer_then_valid_sibling_recovers(self):
+        """坏 verdict 顶层对象被整体跳过后继续扫后续顶层——多对象恢复
+        不因嵌套封堵回退（重复块恢复的邻接形态）。"""
+        text = '{"verdict": "MAYBE"} {"verdict": "reject"}'
+        assert parse_agent_json(text, {"accept", "reject"})["verdict"] == "reject"
+
+    def test_parse_all_fences_scanned_before_bare(self):
+        """PR #211 CodeRabbit 评论1：fence 优先 = 穷尽全部 fence。首个
+        fence 裁决非法时，正文更早出现的合法裸对象不得抢先后位合法
+        fence——fence 是更强的结构化输出信号，优先级须穷尽兑现。"""
+        text = ('{"verdict": "PASS", "evidence": "正文裸对象"}\n'
+                '```json\n{"verdict": "MAYBE"}\n```\n'
+                '```json\n{"verdict": "FAIL", "evidence": "后位 fence"}\n```')
+        assert parse_agent_json(text, self.VERDICTS)["verdict"] == "FAIL"
+
+    def test_parse_unclosed_outer_nested_verdict_rejected(self):
+        """PR #211 CodeRabbit 评论2：外层对象未闭合时，解码失败不得
+        落到嵌套 `{` 接受其 verdict——坏对象按字符串感知平衡范围整体
+        跳过（未闭合则跳到输入末尾），fail-closed。"""
+        text = '{"verdict": "MAYBE", "evidence": {"verdict": "reject"}'
+        with pytest.raises(ValueError, match="verdict"):
+            parse_agent_json(text, {"accept", "reject"})
+
+    def test_parse_failed_prose_brace_skips_balanced_range(self):
+        """解码失败的散文花括号按平衡范围跳过（未闭合吞到末尾的对偶
+        边界）：`{附录A}` 平衡闭合后，其后合法顶层对象仍可恢复。"""
+        text = '附注 {附录A}\n{"verdict": "FAIL", "evidence": "x"}'
+        assert parse_agent_json(text, self.VERDICTS)["verdict"] == "FAIL"
+
 
 class TestEvidenceSuites:
     def test_skills_change_yields_suite(self):
@@ -160,16 +219,33 @@ class TestNodeTimeout:
 
     def test_implement_gets_full_budget(self):
         from factory_lib import node_timeout
-        assert node_timeout("implement") == "30m"
+        # 2026-09-04 重校准：ok-run P95 1534s × 1.2 = 1840.8s → 31m
+        assert node_timeout("implement") == "31m"
+
+    def test_review_recalibrated_30m(self):
+        from factory_lib import node_timeout
+        # 2026-09-04：P95 845s×1.2 → 17m；2026-09-10：17m 撞顶（#165 r2/r3 1026/1021s 败）→ 30m
+        assert node_timeout("review") == "30m"
 
     def test_unknown_node_defaults_15m(self):
         from factory_lib import node_timeout
         assert node_timeout("mystery") == "15m"
 
+    def test_prime_plan_raised_20m(self):
+        from factory_lib import node_timeout
+        # 2026-09-10：prime 900s 撞顶（#165 r6）、plan 901s 压线（r4）→ 各升至 20m
+        assert node_timeout("prime") == "20m"
+        assert node_timeout("plan") == "20m"
+
     def test_per_node_env_override_wins(self):
         from factory_lib import node_timeout
         env = {"FACTORY_TIMEOUT_IMPLEMENT": "45m", "FACTORY_TIMEOUT": "9m"}
         assert node_timeout("implement", env) == "45m"
+
+    def test_process_env_used_when_env_omitted(self, monkeypatch):
+        from factory_lib import node_timeout
+        monkeypatch.setenv("FACTORY_TIMEOUT_REVIEW", "42m")
+        assert node_timeout("review") == "42m"
 
     def test_global_env_fallback(self):
         from factory_lib import node_timeout
@@ -514,3 +590,34 @@ class TestFinalGateSubcommand:
                             {"final_gate_cmd": "python3 tools/final_gate.py"})
         assert factory_lib.main(["factory_lib.py", "final-gate"]) == 0
         assert capsys.readouterr().out == "python3 tools/final_gate.py\n"
+
+class TestSuitesNulOutput:
+    """suites 子命令 NUL 分隔（PR #116 CodeRabbit）：套件名可含空格
+    （skills/doc review/…），换行分隔 + shell for 词拆分（$(…) 去换行
+    按 IFS 切）会把空格名拆碎、消费端静默跳过证据段；\0 让
+    fix-issue.sh/validate-pr.sh 的 read -d '' 逐条保真取回。"""
+
+    def test_space_in_suite_name_survives(self):
+        """带空格目录名产出带空格套件名——NUL 形态的成因锚点：若实现
+        按空白/换行切分即碎名（静默丢证据段）。"""
+        assert evidence_suites(["skills/doc review/scripts/g.py"]) == [
+            "skills/doc review/scripts"
+        ]
+
+    def test_single_suite_nul_terminated_no_newline(self, capsys):
+        """单套件：输出恰一个 NUL 结尾条目、零换行——词拆分形态在此
+        碎名/多词，read -d '' 收敛单条。"""
+        assert factory_lib.main(["factory_lib.py", "suites",
+                                 "skills/api-guard/scripts/api_check.py"]) == 0
+        assert capsys.readouterr().out == "skills/api-guard/scripts\0"
+
+    def test_multi_suite_roundtrip_read_d(self, capsys):
+        """多条目 + 空格名：复刻消费端 read -d '' 解析逐条保真（回归
+        fix-issue.sh/validate-pr.sh 消费协议，PR #116 B）。"""
+        files = ["skills/api-guard/scripts/a.py",
+                 "skills/doc review/scripts/g.py"]
+        assert factory_lib.main(["factory_lib.py", "suites", *files]) == 0
+        raw = capsys.readouterr().out
+        assert raw.endswith("\0")
+        assert raw[:-1].split("\0") == [
+            "skills/api-guard/scripts", "skills/doc review/scripts"]
