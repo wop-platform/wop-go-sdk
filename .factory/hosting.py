@@ -15,7 +15,8 @@
     label_history = [{"op": "add"|"remove", "label": str}]
 - 原子性：issue/pr set-labels 的 add+remove 在支持单请求换标的平台
   （GitHub）合并为一次调用——半途断裂=双标签或裸奔（factory-lib.sh 语义）。
-- 平台选择：FACTORY_HOSTING=github（默认）|codeup。
+- 平台选择：FACTORY_HOSTING 显式设置优先；未设置按 origin remote 检测
+  （codeup.aliyun.com → codeup，github.com/无 remote → github 历史默认）。
 - 退出码：0 成功；1 平台操作失败；2 用法/配置/平台能力缺口（fail-closed，
   绝不静默降级——降级等于状态机半转移）。
 - 层级契约：本模块是**传输层**。issue 评论/标签副作用的唯一出口是
@@ -40,6 +41,8 @@ Codeup 能力边界（ADR-008 证据，勿删）：
   (c) 无标签事件时间线 → label history 不可表达。fail-closed exit 2。
 
 CLI（bash 侧调用面；py 侧 import current_adapter）：
+  --repo R：仓库本地路径（目录形态，平台按该目录 remote 自解析）；slug
+  形态（owner/repo）须显式 FACTORY_HOSTING 锚定平台，否则 fail-closed（#134）
   hosting.py auth ok
   hosting.py label ensure <name> <color> <desc>
   hosting.py label history <pr>
@@ -59,12 +62,17 @@ CLI（bash 侧调用面；py 侧 import current_adapter）：
   hosting.py pr merge <p> --method merge|squash|rebase
 """
 import argparse
+import contextlib
 import datetime
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -81,13 +89,102 @@ class HostingError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Codeup add「预检+POST」的跨进程互斥（PR #116 CodeRabbit）：锁原语与工厂
+# 调度锁同语义（mkdir 原子 + pid 活性判死接管），但锚点不同——hosting CLI
+# 常跨 cwd/worktree 调用，无统一仓内锚点，锁根取机器级临时目录
+# （FACTORY_LOCK_DIR 显式覆盖：测试隔离/多租户）。互斥对象=同仓
+# (adapter.repo 视角)同 PR 同名 add 的双进程写；粒度偏粗无害
+# （串行化而非错误化）。
+# ---------------------------------------------------------------------------
+
+_LABEL_LOCK_TIMEOUT = 5.0      # 等锁最久；超时 fail-closed（code=1）拒放行双写
+_LABEL_LOCK_STALE_GRACE = 2.0  # 无 pid 残锁的年龄宽限（建锁→写 pid 的崩溃窗）
+
+
+def _label_lock_root() -> str:
+    """add 互斥锁根：FACTORY_LOCK_DIR 显式（测试隔离）→ 系统临时目录
+    （跨进程共享——传输层锁须机器级可见；与工厂调度锁的主树锚点两域不重叠）。"""
+    return os.environ.get("FACTORY_LOCK_DIR") or os.path.join(
+        tempfile.gettempdir(), "factory-hosting-locks")
+
+
+def _pid_alive(pid: int) -> bool:
+    """pid 活性（kill(pid, 0) 语义）：EPERM=进程存在按活；内容异常
+    （垃圾/超 C int）不可判定 → 保守按活（等锁超时 fail-closed，不误清）。"""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, ValueError, OverflowError):
+        return True
+        # 等锁超时 fail-closed（code=1）也不误清可能活着的持锁主
+
+
+def _lock_owner(lock_dir: str) -> str:
+    """锁内 pid 文件内容；无/读失败 → ""（建锁与写 pid 之间的崩溃窗形态）。"""
+    try:
+        with open(os.path.join(lock_dir, "pid"), encoding="ascii") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _lock_stale(lock_dir: str, owner: str) -> bool:
+    """死者残锁判定：有 pid 且进程已死 → 可接管；pid 内容异常按活等
+    （宁可等超时 fail-closed，不清活主）；无 pid → 目录年龄超宽限判死
+    （崩溃残锁可清；活主写 pid 在微秒级，不可能越过宽限）。"""
+    if owner:
+        try:
+            pid = int(owner)
+        except ValueError:
+            return False
+        return not _pid_alive(pid)
+    try:
+        return time.time() - os.stat(lock_dir).st_mtime > _LABEL_LOCK_STALE_GRACE
+    except OSError:
+        return False  # 目录已被他人清掉：外层重试 mkdir 收敛
+
+
+def _label_lock_dir(repo: str, p: int, name: str) -> str:
+    """同名 add 的互斥锁目录：sha1(repo|p|name) 折叠——repo/name 来自外部
+    输入，目录名不得含不可信路径字符。"""
+    h = hashlib.sha1(f"{repo}|{p}|{name}".encode()).hexdigest()[:16]
+    return os.path.join(_label_lock_root(), h)
+
+
+# ---------------------------------------------------------------------------
 # GitHub slug 解析（自 factory_lib.py 迁入——平台选择逻辑归本层，
 # 核心脚本不再各自扫 remote）
 # ---------------------------------------------------------------------------
 
-_SLUG_RE = re.compile(
-    r"^(?:[A-Za-z0-9_.-]+@)?(?:github\.com|ssh\.github\.com|github-wop-bot)(?::\d+)?[/:]"
-    r"(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$")
+# 主机白名单基础面 = github 双域名；bot ssh Host 别名等机器特定主机走
+# FACTORY_SLUG_EXTRA_HOSTS（逗号分隔）注入（ADR-012：公开仓零内部标识，
+# 配置数据化 env 两级回退——与 PR #61 平台配置同模式）。token 严格校验
+# [A-Za-z0-9_.-]+（进 regex 交替支，防注入），坏配置 fail-closed 抛错
+# 而非静默降级。缓存按 env 值键控：同进程 env 不变零重编译
+_SLUG_HOST_ENV = "FACTORY_SLUG_EXTRA_HOSTS"
+_slug_re_cache = (None, None)
+
+
+def _slug_re():
+    env = os.environ.get(_SLUG_HOST_ENV, "")
+    if _slug_re_cache[0] == env:
+        return _slug_re_cache[1]
+    hosts = "github\\.com|ssh\\.github\\.com"
+    if env.strip():
+        toks = [t.strip() for t in env.split(",") if t.strip()]
+        for t in toks:
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", t):
+                raise ValueError(
+                    f"{_SLUG_HOST_ENV} 含非法主机名: {t!r}"
+                    "（仅允许 [A-Za-z0-9_.-]）")
+        hosts += "|" + "|".join(re.escape(t) for t in toks)
+    cre = re.compile(
+        rf"^(?:[A-Za-z0-9_.-]+@)?(?:{hosts})(?::\d+)?[/:]"
+        r"(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$")
+    globals()["_slug_re_cache"] = (env, cre)
+    return cre
 _SLUG_VALID = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 
@@ -97,7 +194,7 @@ def extract_slug(urls):
     owner/repo 白名单双闸。GH_REPO 显式指定不经此函数。"""
     for u in urls:
         t = re.sub(r"^(?:ssh|git|https?)://", "", (u or "").strip())
-        m = _SLUG_RE.match(t)
+        m = _slug_re().match(t)
         if m and _SLUG_VALID.fullmatch(m.group("slug")):
             return m.group("slug")
     return ""
@@ -168,6 +265,9 @@ class GitHubAdapter:
     def _issue(d):
         return {"number": d.get("number"), "state": _GH_STATE.get(d.get("state"), "open"),
                 "title": d.get("title") or "", "body": d.get("body") or "",
+                # updatedAt ISO8601（缺省 None）：dispatch-liveness rejected
+                # 滞留阈值用；非 gh 后端无此字段则该项检测自动跳过
+                "updatedAt": d.get("updatedAt"),
                 "labels": [l["name"] for l in d.get("labels") or []],
                 "comments": [{"author": (c.get("author") or {}).get("login") or "",
                               "body": c.get("body") or ""}
@@ -192,6 +292,20 @@ class GitHubAdapter:
             return False  # gh CLI 不在 PATH（环境缺失，非凭据问题）
         return r.returncode == 0
 
+    def auth_diagnose(self) -> str:
+        """auth_ok 失败的留痕诊断：返回 gh auth status 的 stderr（非空时，否则 stdout），并去除首尾空白。
+
+        【2026-09-05 02:00 6 仓瞬断事故（内部 SDK 仓）】auth_ok 只回布尔，失败
+        stderr 被丢弃 → 事后无法回溯是 keyring/网络/过期哪种。dispatch
+        preflight 失败路径调用，输出附着 dispatch 日志（同 bare 事故的
+        诊断附着模式）。"""
+        try:
+            r = subprocess.run(["gh", "auth", "status"],
+                               capture_output=True, text=True)
+        except FileNotFoundError:
+            return "gh CLI 不在 PATH（auth_ok 同因失败）"
+        return (r.stderr if r.stderr.strip() else r.stdout).strip()
+
     def issue_view(self, n, repo=None):
         return self._issue(self._gh_json(
             ["issue", "view", str(n),
@@ -203,7 +317,7 @@ class GitHubAdapter:
 
     def issue_list(self, state="open", label=None, limit=100,
                    comments=False, repo=None):
-        fields = "number,state,title,body,labels" + (",comments" if comments else "")
+        fields = "number,state,title,body,labels,updatedAt" + (",comments" if comments else "")
         args = ["issue", "list", "--state", state, "--limit", str(limit),
                 "--json", fields]
         if label:
@@ -220,7 +334,18 @@ class GitHubAdapter:
             return True
         r = self._gh(args, repo)
         if r.returncode != 0:
-            raise HostingError(f"issue #{n} 标签设置失败: {r.stderr.strip()[:200]}")
+            # 假阴性和解（#207 实证：gh 非零但服务端已应用标签——
+            # "mutation landed + client reported failure"）：失败路径重读
+            # 远端标签态，目标已达成即幂等成功，裁决不被传输层误报否决；
+            # 复核不可用/目标未达成 → 原 fail-closed 错误透传。
+            try:
+                labels = set(self.issue_labels(n, repo))
+            except HostingError:
+                labels = None
+            if labels is None or not set(add) <= labels or set(remove) & labels:
+                raise HostingError(
+                    f"issue #{n} 标签设置失败: {r.stderr.strip()[:200]}")
+            return True
         return True
 
     def issue_comment(self, n, body, marker=None, repo=None):
@@ -270,13 +395,29 @@ class GitHubAdapter:
             return True
         r = self._gh(args, repo)
         if r.returncode != 0:
-            raise HostingError(f"pr #{p} 标签设置失败: {r.stderr.strip()[:200]}")
+            # 假阴性和解：同 issue_set_labels（#207 实证类）——pr view
+            # 重读标签态复核，目标已达成即幂等成功；复核不可用/未达成
+            # → 原 fail-closed 错误透传。
+            try:
+                d = self._gh_json(["pr", "view", str(p), "--json", "labels"], repo)
+                labels = {l.get("name") for l in d.get("labels") or []}
+            except HostingError:
+                labels = None
+            if labels is None or not set(add) <= labels or set(remove) & labels:
+                raise HostingError(
+                    f"pr #{p} 标签设置失败: {r.stderr.strip()[:200]}")
+            return True
         return True
 
     def pr_create(self, head, title, body, label=None, base=None, repo=None):
+        """创建 PR → 中立 {number,url}。--base 显式必填：默认分支因仓而异
+        （gh 猜默认 = 静默落错基线），同 codeup 形态 fail-closed（PR #116）。"""
+        if not base:
+            raise HostingError(
+                "github pr create 需要 --base（默认分支因仓而异，勿猜默认）",
+                code=2)
         args = ["pr", "create", "--head", head, "--title", title, "--body", body]
-        if base:
-            args += ["--base", base]
+        args += ["--base", base]
         if label:
             args += ["--label", label]
         r = self._gh(args, repo)
@@ -400,7 +541,7 @@ class CodeupAdapter:
             "FACTORY_SPACES_CONF",
             os.path.expanduser("~/.config/factory/codeup-spaces.conf"))
         ns_map = {}
-        try:
+        with contextlib.suppress(OSError):
             with open(conf, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -408,11 +549,11 @@ class CodeupAdapter:
                         continue
                     k, v = line.split("|", 1)
                     ns_map[k.strip()] = v.strip()
-        except OSError:
-            pass
         org, path = self._remote()
         if org and path and "/" in path and ns_map:
-            ns = path.split("/")[1]
+            # namespace = path 首段（gtsp/open-platform/<repo> → gtsp）；
+            # 旧 [1] 取到中间层 open-platform，映射永不命中（php#17）
+            ns = path.split("/")[0]
             if ns in ns_map:
                 return ns_map[ns]
         raise HostingError(
@@ -552,10 +693,8 @@ class CodeupAdapter:
         """description 双形态（{"htmlValue":...} JSON 串 / 裸 HTML）→ 纯文本。"""
         s = raw or ""
         if s.lstrip().startswith("{"):
-            try:
+            with contextlib.suppress(ValueError):
                 s = json.loads(s).get("htmlValue") or ""
-            except ValueError:
-                pass
         # HTML 注释段原样保留：dedupe marker（<!-- m1 -->）与 labels 块
         # （<!-- factory:labels:v1: ... -->）靠注释承载——剥标签会把注释
         # 一起剥掉，marker 永不命中（#67 实现期实证）。labels 块的剥离
@@ -586,7 +725,7 @@ class CodeupAdapter:
                 "comments": cs}
 
     def _wi_get(self, n):
-        """双键寻址：serialNumber（KFPT-16）或 24-hex id 均 200（live）。"""
+        """双键寻址：serialNumber（T-16）或 24-hex id 均 200（live）。"""
         _, org = self._cfg()
         r = self._req(
             "GET",
@@ -739,7 +878,7 @@ class CodeupAdapter:
         d = d or {}
         wid = d.get("id")
         # 【live 2026-08-26】create 响应只含 24-hex id，无 serialNumber
-        # （实测项目 KFPT-21）；人类可读编号（KFPT-N）须回查
+        # （实测项目 T-21）；人类可读编号（T-N）须回查
         # 详情。回查失败降级 id（view/编辑两种键都认，但人在界面引用
         # 序号——宁可多一次 GET）
         number = d.get("serialNumber") or wid
@@ -795,7 +934,7 @@ class CodeupAdapter:
         active = {self._marker_label(m["content"]) for m in markers
                   if not m["resolved"] and m["content"].startswith(_CU_LABEL_ADD)}
         names = []
-        try:
+        with contextlib.suppress(HostingError):
             payload = self._req("GET", f"{self._base()}/changeRequests/{p}/labels")
             items = payload if isinstance(payload, list) else (payload.get("result") or [])
             for l in items:
@@ -805,15 +944,16 @@ class CodeupAdapter:
                 if ok and name.startswith(_CU_FACTORY_PREFIX) and name not in active:
                     continue  # 工厂类标投影失真：以标记生命周期为准（仅读成功时）
                 names.append(name)
-        except HostingError:
-            pass  # 类标读失败不阻断详情（标记评论仍可承载）
         if ok:
             names += active
         return sorted({n for n in names if n})
 
     @staticmethod
     def _marker_label(content):
-        return content[len(_CU_LABEL_ADD):].splitlines()[0].strip()
+        # 平台开放输入：恰为前缀/前缀+空白时切片为空，splitlines()[0] 抛
+        # IndexError（CodeRabbit xx-skills#14）；空标记按无标记处理
+        rest = content[len(_CU_LABEL_ADD):].strip()
+        return rest.splitlines()[0].strip() if rest else ""
 
     def pr_view(self, p, repo=None):
         # 【live 2026-08-26】单体端点是仓库级（仓库级集合 404、单体正常）
@@ -854,14 +994,28 @@ class CodeupAdapter:
             out = [p for p in out if label in p["labels"]]
         return out[:limit]
 
+    def _label_markers(self, p, name):
+        """同名 label 的未 resolved add 标记（add/remove 幂等预检共用）。
+
+        普通循环逐条判别（无重复索引/无海象，规避 Sourcery 两口径分歧）。
+        """
+        out = []
+        for m in self._marker_comments(p):
+            c = m["content"]
+            if m["resolved"] or not c.startswith(_CU_LABEL_ADD):
+                continue
+            if self._marker_label(c) == name:
+                out.append(m)
+        return out
+
     def pr_set_labels(self, p, add=(), remove=(), repo=None):
-        # 评论标记模型（#66，承载平台缺口 b）：remove = 置 resolved
-        # （内容保留，轮次计数不减——对齐 GitHub label-add 事件语义）；
-        # add = 发标记评论 + 类标 Link 平台原生补充（两载体并存）。
+        """评论标记模型（#66，承载平台缺口 b）：remove = 置 resolved
+        （内容保留，轮次计数不减——对齐 GitHub label-add 事件语义）；
+        add = 标记评论 + 类标 Link 平台原生补充（两载体并存）。
+        add 的预检+POST 以跨进程锁串行（PR #116）：双进程同时过预检再
+        各 POST = 双未 resolved 标记；锁内重预检命中 → 幂等跳过。"""
         for name in remove:
-            hits = [m for m in self._marker_comments(p)
-                    if not m["resolved"] and m["content"].startswith(_CU_LABEL_ADD)
-                    and self._marker_label(m["content"]) == name]
+            hits = self._label_markers(p, name)
             if not hits:
                 print(f"[hosting] remove {name}: 无未 resolved 标记（幂等跳过）",
                       file=sys.stderr)
@@ -870,10 +1024,19 @@ class CodeupAdapter:
                           f"{self._base()}/changeRequests/{p}/comments/{m['id']}",
                           body={"resolved": True})
         for name in add:
-            self._req("POST", f"{self._base()}/changeRequests/{p}/comments",
-                      body={"comment_type": "GLOBAL_COMMENT",
-                            "content": f"{_CU_LABEL_ADD}{name}",
-                            "resolved": False})
+            # 幂等（对齐 remove 分支）：已有同名未 resolved 标记则跳过
+            # ——重试/双写场景重复 POST 会堆未 resolved 重复标记（php#17）。
+            # 预检+POST 在跨进程锁内（_add_label_lock）：锁外预检=裸竞态
+            # 窗口，后到者锁内重预检命中 → 幂等跳过，锁保证恰一次 POST。
+            with self._add_label_lock(p, name):
+                if hits := self._label_markers(p, name):
+                    print(f"[hosting] add {name}: 已有未 resolved 标记（幂等跳过）",
+                          file=sys.stderr)
+                    continue
+                self._req("POST", f"{self._base()}/changeRequests/{p}/comments",
+                          body={"comment_type": "GLOBAL_COMMENT",
+                                "content": f"{_CU_LABEL_ADD}{name}",
+                                "resolved": False})
         # 类标 Link best-effort：不存在（label create 未破案，界面人工路径）
         # 时降级告警——标记评论已承载状态机语义，链不因平台类标缺失受阻
         ids = []
@@ -894,6 +1057,55 @@ class CodeupAdapter:
                       file=sys.stderr)
         return True
 
+    @contextlib.contextmanager
+    def _add_label_lock(self, p, name):
+        """add「预检+POST」互斥上下文（见模块段注释）：mkdir 原子占锁 +
+        pid 活性判死接管 + 等锁有界；超时 raise HostingError(code=1)——宁可
+        让调用链失败重试（重试以幂等跳过收敛），不放行双写。"""
+        lock_dir = _label_lock_dir(self.repo, p, name)
+        deadline = time.monotonic() + _LABEL_LOCK_TIMEOUT
+        # 锁根常驻：ensure 父目录（多进程并发 makedirs exist_ok 原子无害）
+        os.makedirs(_label_lock_root(), exist_ok=True)
+        while True:
+            try:
+                os.mkdir(lock_dir)
+            except FileExistsError as e:
+                owner = _lock_owner(lock_dir)
+                if _lock_stale(lock_dir, owner):
+                    # 判死与清除分离（PR #116 审查 P2）：rename 领取清除权，
+                    # 他者先接管则 rename 失败、活锁不被动；owner 复核兜底
+                    # 判死→改名间他者已 mkdir 新活锁的窗口（原样放回不删）
+                    # ——与 lease 墓碑 check-move 竞态同族，杜绝误删活主。
+                    victim = f"{lock_dir}.dead.{os.getpid()}.{time.monotonic_ns()}"
+                    try:
+                        os.rename(lock_dir, victim)
+                    except OSError:
+                        continue  # 他者已清/接管：不抢，重评估
+                    if _lock_owner(victim) != owner:
+                        with contextlib.suppress(OSError):
+                            os.rename(victim, lock_dir)  # 判死后换新主：原样放回
+                        continue
+                    shutil.rmtree(victim, ignore_errors=True)
+                    continue  # 死主残锁：清后重试（mkdir 收敛单赢家）
+                if time.monotonic() >= deadline:
+                    raise HostingError(
+                        f"add {name}: 同标签并发写互斥超时"
+                        f"（{_LABEL_LOCK_TIMEOUT:.0f}s，另一进程持锁），"
+                        "fail-closed 拒双写",
+                        code=1,
+                    ) from e
+                time.sleep(0.05)
+                continue
+            break
+        with contextlib.suppress(OSError):
+            with open(os.path.join(lock_dir, "pid"), "w",
+                      encoding="ascii") as fh:
+                fh.write(str(os.getpid()))
+        try:
+            yield
+        finally:
+            shutil.rmtree(lock_dir, ignore_errors=True)
+
     def _label_id(self, name):
         # 【文档推导】ListProjectLabels → name→id
         payload = self._req("GET", f"{self._base()}/labels",
@@ -905,10 +1117,16 @@ class CodeupAdapter:
 
     def pr_create(self, head, title, body, label=None, base=None, repo=None):
         # 【文档推导】CreateMergeRequest（body 形态经文档核实）
+        if not base:
+            # targetBranch 必填且因仓而异（master/main 均有实仓）——猜默认
+            # 会静默落错基线，fail-closed 拒猜（web-tools#5 Sourcery）
+            raise HostingError(
+                "codeup pr create 需要 --base（目标分支因仓而异，勿猜默认）",
+                code=2)
         rid = self.repo_ref()
         payload = self._req("POST", f"{self._base()}/changeRequests", body={
             "title": title, "description": body,
-            "sourceBranch": head, "targetBranch": base or "master",
+            "sourceBranch": head, "targetBranch": base,
             "sourceProjectId": rid, "targetProjectId": rid})
         result = payload.get("result", payload)
         url = result.get("detailUrl") or result.get("webUrl") or ""
@@ -976,9 +1194,12 @@ class CodeupAdapter:
         # 评论标记承载（#66，平台缺口 c）：全部 add 标记 → 事件流。
         # resolved 不减计数（重派前 remove、再打回再 add，轮次单调递增
         # ——对齐 GitHub label-add 事件语义）；中立 schema 同 GitHub 侧。
-        return [{"op": "add", "label": self._marker_label(m["content"])}
-                for m in self._marker_comments(p)
-                if m["content"].startswith(_CU_LABEL_ADD)]
+        return [
+            {"op": "add", "label": label}
+            for m in self._marker_comments(p)
+            if m["content"].startswith(_CU_LABEL_ADD)
+            and (label := self._marker_label(m["content"]))
+        ]  # 前缀-only 评论空标记 → walrus 短路不产无效事件（#119）
 
 
 ADAPTERS = {"github": GitHubAdapter, "codeup": CodeupAdapter}
@@ -1027,6 +1248,31 @@ def current_adapter(repo="."):
         return cls(repo)
     else:
         raise HostingError(f"未知 FACTORY_HOSTING: {FACTORY_HOSTING}", code=2)
+
+
+def _repo_split(raw):
+    """--repo 双语义拆分（PR #116 CodeRabbit）→ (local, slug)。
+
+    - 本地目录形态（存在，含 "."）：探测/远端解析用真实路径（该目录
+      remote 选平台、解析 slug），ops 收 slug=None——由目录 remote
+      自解析（java#29 跨仓调用的本意；目录路径绝不进 gh --repo）。
+    - owner/repo slug 形态：无 host 信息，平台检测只能落在 cwd remote——
+      cwd 与目标仓不一致时 Codeup 会被误判 GitHub（issue #134）。仅当
+      FACTORY_HOSTING 显式锚定平台时放行（slug 原样进 ops），否则
+      fail-closed 拒收。
+    未传 --repo → (".", None)。
+    """
+    if raw is None:
+        return ".", None
+    if os.path.isdir(raw):
+        return raw, None
+    # 实时读 env（与 _detect_hosting 同、与模块常量 FACTORY_HOSTING 异）：
+    # monkeypatch 无需 reload 即可测
+    if not os.environ.get("FACTORY_HOSTING"):
+        raise HostingError(
+            "--repo slug 形态（owner/repo）无法判定托管平台（issue #134）："
+            "请传仓库本地路径，或显式设置 FACTORY_HOSTING 后再用 slug", code=2)
+    return ".", raw
 
 
 # ---------------------------------------------------------------------------
@@ -1275,10 +1521,16 @@ def _cmd_pr_merge(ad, args):
 
 
 def main(argv):
-    """CLI 入口：解析 → 取适配器 → 命令分派。"""
+    """CLI 入口：解析 → --repo 双语义拆分 → 取适配器 → 命令分派。"""
     args = _build_parser().parse_args(argv)
     try:
-        ad = current_adapter()
+        # --repo 目标仓驱动平台检测（java#29 Sourcery：按 cwd 检测在
+        # 跨仓 CLI 调用下会选错适配器）；拆分后探测用 local（目录真实
+        # 路径或 "."），args.repo 改写为 slug 形态——目录形态收 None
+        # （slug 由该目录 remote 自解析），slug 形态原样进 ops。
+        raw = getattr(args, "repo", None)
+        local, args.repo = _repo_split(raw)
+        ad = current_adapter(local)
 
         if args.cmd == "auth":
             sys.exit(0 if ad.auth_ok() else 1)

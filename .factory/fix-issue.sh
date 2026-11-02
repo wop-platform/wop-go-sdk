@@ -26,7 +26,15 @@ HOST="python3 ${REPO}/.factory/hosting.py"   # 托管平台抽象（ADR-008）�
 DIR="${REPO}/.factory/artifacts/issue-${ISSUE}"
 BRANCH="factory/issue-${ISSUE}"
 WT="${REPO}/.factory/worktrees/issue-${ISSUE}"   # 链独立 worktree（多驱动隔离）
-BASE_BRANCH="${FACTORY_BASE_BRANCH:-main}"   # 两级回退：env → main（PR #61 Sourcery 意图；hosting 形态平台配置走 env，forge.json 中间级随 forge 退役）
+# 基线分支两级解析（issue #133）：env 显式 → origin 实际默认分支；两者皆无
+# 即 fail-closed 拒猜——固定回退 main 会绕过 hosting.py Codeup 拒猜不变量
+# （targetBranch 因仓而异，master 仓静默落错基线）。PR #61 的 env 级保留。
+# 分步而非 $(...) 内嵌：set -e 下替换失败会带 git rc 直接终止，|| 兜底接不住。
+BASE_BRANCH="${FACTORY_BASE_BRANCH:-}"
+if [ -z "${BASE_BRANCH}" ]; then
+  BASE_BRANCH="$(git -C "${REPO}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
+fi
+[ -n "${BASE_BRANCH}" ] || { echo "[base] FACTORY_BASE_BRANCH 未配置且 origin/HEAD 默认分支不可读：拒猜基线，fail-closed 终止（issue #133）" >&2; exit 2; }
 # 链副作用共享库：issue 评论唯一出口 + 拒绝单一动作（契约见库头注释）
 source "${REPO}/.factory/factory-lib.sh"
 node_timeout() { python3 "${REPO}/.factory/factory_lib.py" timeout "$1"; }  # 分级预算：裁决器5m/工作节点15m/implement 30m
@@ -145,16 +153,37 @@ $(python3 "${REPO}/.factory/factory_lib.py" repo-vars)
 任务参数:
 - ISSUE_DIR: ${DIR}
 - 仓库根: ${WT}（链独立 worktree，勿越界改主工作区）
-- issue 编号: ${ISSUE}"
+- issue 编号: ${ISSUE}
+- 节点预算（硬击杀线，编排器 --max-time）: $(node_timeout "${name}")"
   t0=$(date +%s)
+  # B1: 节点起点标记（产物 mtime 参照）。创建失败也是节点死亡——先落 node-fail
+  # 再退（Sourcery 复审）；DIR 整体不可写时 printf 同败，由 trap 的 chain-abort 兜底
+  if ! touch "${DIR}/.${name}-t0" 2>/dev/null; then
+    printf 'node-fail %s round=%s node=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND:-0}" "${name}" "marker-create" >> "${DIR}/chain-history" 2>/dev/null || true
+    return 1
+  fi
   if ! omp_node "${WT}" "${DIR}/${name}.log" "$(node_timeout "${name}")" -- "${prompt}"; then
     _node_metric "${name}" "${t0}" "fail" >> "${DIR}/node-metrics.jsonl"
+    printf 'node-fail %s round=%s node=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND:-0}" "${name}" "omp-exit" >> "${DIR}/chain-history" 2>/dev/null || true
     echo "    节点 ${name} 失败（详见 ${DIR}/${name}.log）" >&2; return 1
   fi
   t1=$(date +%s)
-  if ! grep -q "ARTIFACT:" "${DIR}/${name}.log"; then
+  # B1（2026-09-05）：产物判定由"stdout 含 ARTIFACT: 字面行"改为"prompts 声明的
+  # 固定产物文件存在且 mtime ≥ 节点起点标记"。容忍 agent 末行格式漂移（实证：计划
+  # 完整产出但末行写"产物：/path/plan.json"被 grep 误杀）；产物缺失/未更新仍
+  # fail-closed（上一轮残留物 mtime < 起点标记，不误判通过）。无声明节点回退
+  # stdout ARTIFACT: 行检查。
+  artifact="$(grep -m1 -oE 'ARTIFACT: \$ISSUE_DIR/[^` ]+' "${REPO}/.factory/prompts/${name}.md" | sed 's#.*/##' || true)"
+  if [ -z "${artifact}" ]; then
+    grep -q "ARTIFACT:" "${DIR}/${name}.log" || {
+      _node_metric "${name}" "${t0}" "no-artifact" >> "${DIR}/node-metrics.jsonl"
+      printf 'node-fail %s round=%s node=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND:-0}" "${name}" "no-artifact" >> "${DIR}/chain-history" 2>/dev/null || true
+      echo "    节点 ${name} 未声明产物（缺 ARTIFACT 行）" >&2; return 1
+    }
+  elif [ ! -f "${DIR}/${artifact}" ] || [ "${DIR}/${artifact}" -ot "${DIR}/.${name}-t0" ]; then
     _node_metric "${name}" "${t0}" "no-artifact" >> "${DIR}/node-metrics.jsonl"
-    echo "    节点 ${name} 未声明产物（缺 ARTIFACT 行）" >&2; return 1
+    printf 'node-fail %s round=%s node=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND:-0}" "${name}" "stale-artifact" >> "${DIR}/chain-history" 2>/dev/null || true
+    echo "    节点 ${name} 产物缺失/未更新（${artifact} 不存在或早于节点起点标记）" >&2; return 1
   fi
   _node_metric "${name}" "${t0}" "ok" >> "${DIR}/node-metrics.jsonl"
   printf '    耗时 %ss\n' "$(( t1 - t0 ))"
@@ -207,11 +236,13 @@ ${cmts}
   if ! omp_node "${REPO}" "${DIR}/triage.log" "$(node_timeout triage)" --no-tools \
       --config "${REPO}/.factory/omp-isolated.yml" -- "${prompt}"; then
     _node_metric triage "${t0}" "fail" >> "${DIR}/node-metrics.jsonl"
+    printf 'node-fail %s round=%s node=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND:-0}" "triage" "omp-exit" >> "${DIR}/chain-history" 2>/dev/null || true
     echo "    triage 节点失败（详见 ${DIR}/triage.log）" >&2; return 1
   fi
   _node_metric triage "${t0}" "ok" >> "${DIR}/node-metrics.jsonl"
   python3 "${REPO}/.factory/factory_lib.py" parse "${DIR}/triage.log" "${DIR}/triage.json" accept,reject \
-    || { echo "    triage 输出无法解析为 JSON（见 factory_lib.parse_agent_json）" >&2; return 1; }
+    || { printf 'node-fail %s round=%s node=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND:-0}" "triage" "parse" >> "${DIR}/chain-history" 2>/dev/null || true; \
+         echo "    triage 输出无法解析为 JSON（见 factory_lib.parse_agent_json）" >&2; return 1; }
 }
 
 run_holdout() {  # 物理隔离验证器：--no-tools + 输入全部内联，agent 无任何工具
@@ -237,11 +268,13 @@ ${out}
   if ! omp_node "${REPO}" "${DIR}/holdout.log" "$(node_timeout holdout)" --no-tools \
       --config "${REPO}/.factory/omp-isolated.yml" -- "${prompt}"; then
     _node_metric holdout "${t0}" "fail" >> "${DIR}/node-metrics.jsonl"
+    printf 'node-fail %s round=%s node=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND:-0}" "holdout" "omp-exit" >> "${DIR}/chain-history" 2>/dev/null || true
     echo "    holdout 节点失败（详见 ${DIR}/holdout.log）" >&2; return 1
   fi
   _node_metric holdout "${t0}" "ok" >> "${DIR}/node-metrics.jsonl"
   python3 "${REPO}/.factory/factory_lib.py" parse "${DIR}/holdout.log" "${DIR}/holdout.json" PASS,FAIL \
-    || { echo "    holdout 输出无法解析为 JSON（见 factory_lib.parse_agent_json）" >&2; return 1; }
+    || { printf 'node-fail %s round=%s node=%s reason=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND:-0}" "holdout" "parse" >> "${DIR}/chain-history" 2>/dev/null || true; \
+         echo "    holdout 输出无法解析为 JSON（见 factory_lib.parse_agent_json）" >&2; return 1; }
 }
 
 
@@ -279,6 +312,14 @@ if [ "${DRY}" = 0 ]; then
   ROUND=$(( $(grep -c 'chain-start' "${DIR}/chain-history" 2>/dev/null || echo 0) + 1 ))
   # 清上一轮裁决产物：防陈旧 triage.json/holdout.json 污染本轮判定与台账分类
   rm -f "${DIR}/triage.json" "${DIR}/holdout.json"
+  # 归档上一轮过程产物 → *-pre-r${ROUND}.*（A：跨轮回流，下轮 prime/plan 的
+  # 增量输入。上轮死在更早节点时文件属更早轮——pre-rN 语义 =「本轮开始时的
+  # 内容」仍为真；B1 判定不受影响：归档即移走，旧文件不可能冒充本轮产物）
+  for _af in prime.md plan.json implement.md review.md; do
+    if [ -f "${DIR}/${_af}" ]; then
+      mv -f "${DIR}/${_af}" "${DIR}/${_af%.*}-pre-r${ROUND}.${_af##*.}" || true
+    fi
+  done
   CHAIN_T0=$(date +%s)
   echo "chain-start $(date -u +%Y-%m-%dT%H:%M:%SZ) round=${ROUND}" >> "${DIR}/chain-history"
   # 台账（EXIT 时写）：{ts, issue, round, type, exit, secs}——重派率/首轮通过率 jq 一行可算。
@@ -307,11 +348,28 @@ if [ "${DRY}" = 0 ]; then
       fi
     fi
     mkdir -p "${REPO}/.factory/locks"
-    # issue 值加引号：Codeup 编号是字符串（KFPT-18），%s 裸出产出
-    # {"issue": KFPT-18} 非法 JSON，jq 消费方崩（下游仓实测）
+    # issue 值加引号：Codeup 编号是字符串（T-18），%s 裸出产出
+    # {"issue": T-18} 非法 JSON，jq 消费方崩（下游仓实测）
     printf '{"ts": "%s", "issue": "%s", "round": %s, "type": "%s", "exit": %s, "secs": %s}\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ISSUE}" "${ROUND}" "${kind}" "${rc}" \
       "$(( $(date +%s) - CHAIN_T0 ))" >> "${REPO}/.factory/locks/ledger.jsonl"
+  }
+  # #14 补遗：抢救未提交 WIP——rev-list=0 时 trap 的 salvage push 无物可推
+  # （#165 r1-r3 实证：implement 未提交即死，WIP 随 worktree 强删湮灭）。
+  # intent-to-add 让 untracked 入 diff；binary diff 快照到 ISSUE_DIR 供下轮
+  # implement 作证据输入（只读参考，不自动续作）；空 diff 不留噪声文件。
+  # best-effort：恒 return 0，任何失败不中断清理链（#23 纪律）。
+  salvage_wip() {
+    local rc="$1" patch
+    if [ "${rc}" -eq 0 ] || [ ! -d "${WT}" ]; then return 0; fi
+    patch="${DIR}/salvage-r${ROUND}.patch"
+    git -C "${WT}" add -N . >/dev/null 2>&1 || true
+    if ! git -C "${WT}" diff HEAD --binary > "${patch}" 2>/dev/null || [ ! -s "${patch}" ]; then
+      rm -f "${patch}" 2>/dev/null || true
+    else
+      echo "  [salvage] 未提交 WIP 快照 → ${patch}"
+    fi
+    return 0
   }
   # 失败清理 + 台账 + 产出抢救 + worktree 回收：
   # - set +e 首动作（#23）：trap 是状态机复位的唯一保障，内部任一命令
@@ -322,6 +380,10 @@ if [ "${DRY}" = 0 ]; then
   #   下轮 -B 重置回基线孤儿化，implement 成果湮灭）。--force：下轮
   #   从基线重跑后非 FF，远端镜像语义 = 最新一轮产出；推送失败仅告警
   #   不阻断后续清理（网络故障不应二次放大为状态残留）
+  # - rc≠0 追加 chain-abort 行到 chain-history（A：下轮 prime/plan 的死因
+  #   输入）；未提交 WIP 由 salvage_wip 快照到 ISSUE_DIR，均须先于 worktree
+  #   强删。SIGKILL 下 trap 整体失守，此通道同殁——dispatcher 侧检测为
+  #   残余缺口，另行立项
   # - 非零退出移除流转标签回零标签态（可重试）；无论成败都记账；
   #   worktree 无论成败一并回收
   # - 清理顺序（PR#34 审查修复）：标签清理在 lease_cleanup **之前**——清标
@@ -330,7 +392,7 @@ if [ "${DRY}" = 0 ]; then
   #   或作为人工债务可见。lease_cleanup 收心跳+放租约，放清理链末尾。
   # D1: 本 trap 覆盖早期放锁 trap，故自带锁释放；派发链 MANUAL_LOCK=0 不动锁
   # shellcheck disable=SC2154  # rc 于本 trap 行内由 rc=$? 赋值，shellcheck 不解析 trap 字符串
-  trap 'rc=$?; set +e; write_ledger "${rc}"; if [ "${rc}" -ne 0 ] && [ "$(git -C "${REPO}" rev-list --count ${BASE_BRANCH}.."${BRANCH}" 2>/dev/null || echo 0)" -gt 0 ]; then git -C "${REPO}" push --force --no-verify origin "${BRANCH}" >/dev/null 2>&1 && echo "  [salvage] 失败链产出已推送 origin/${BRANCH}" || echo "  [warn] 失败链产出推送失败，产出仅在本地分支 ${BRANCH}" >&2; fi; git -C "${REPO}" worktree remove --force "${WT}" >/dev/null 2>&1 || true; [ "${rc}" -ne 0 ] && { issue_label remove factory:triaging; issue_label remove factory:accepted; issue_label remove factory:in-progress; }; lease_cleanup; [ "${MANUAL_LOCK}" = 1 ] && rm -rf "${LOCKDIR:-}" 2>/dev/null' EXIT
+  trap 'rc=$?; set +e; write_ledger "${rc}"; if [ "${rc}" -ne 0 ]; then printf "chain-abort %s round=%s exit=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROUND}" "${rc}" >> "${DIR}/chain-history" 2>/dev/null || true; fi; if [ "${rc}" -ne 0 ] && [ "$(git -C "${REPO}" rev-list --count ${BASE_BRANCH}.."${BRANCH}" 2>/dev/null || echo 0)" -gt 0 ]; then git -C "${REPO}" push --force --no-verify origin "${BRANCH}" >/dev/null 2>&1 && echo "  [salvage] 失败链产出已推送 origin/${BRANCH}" || echo "  [warn] 失败链产出推送失败，产出仅在本地分支 ${BRANCH}" >&2; fi; salvage_wip "${rc}"; git -C "${REPO}" worktree remove --force "${WT}" >/dev/null 2>&1 || true; [ "${rc}" -ne 0 ] && { issue_label remove factory:triaging; issue_label remove factory:accepted; issue_label remove factory:in-progress; }; lease_cleanup; [ "${MANUAL_LOCK}" = 1 ] && rm -rf "${LOCKDIR:-}" 2>/dev/null' EXIT
 else
   echo "[dry-run] hosting issue view #${ISSUE} → ${DIR}/issue.json"
   echo "[dry-run] label: +factory:triaging（裁决后 → accepted|rejected）"
@@ -417,9 +479,32 @@ fi
 
 # --- 6. 确定性门：周界 + 测试（tests-output.txt 由脚本生成，不依赖节点自觉） ---
 if [ "${DRY}" = 0 ]; then
-  CHANGED="$(git -C "${WT}" diff --name-only ${BASE_BRANCH}..."${BRANCH}" 2>/dev/null \
-    || git -C "${WT}" diff --name-only HEAD~1)"
-  python3 "${REPO}/.factory/guard.py" --files ${CHANGED}
+  # NUL 分隔读入数组（bash 3.2 无 mapfile，同 trap 段先例）：换行
+  # 分隔 + 未引号展开会把含空格/通配符路径拆碎（web-tools#5 Sourcery）
+  CHANGED=()
+  while IFS= read -r -d '' f; do CHANGED+=("${f}"); done \
+    < <(git -C "${WT}" diff --name-only -z "${BASE_BRANCH}...${BRANCH}" 2>/dev/null \
+    || git -C "${WT}" diff --name-only -z HEAD~1)
+
+  # 权威改动面判定（#170 评审修正）：CHANGED 空还可能源于 diff 命令静默
+  # 失败（三点式 2>/dev/null 与 HEAD~1 兜底双败），不可与真零改动混同。
+  # log 失败 = 改动面不可判定 → fail-closed；guard 跳过与 §7.5 收官共用
+  # 本值，不二次取样。
+  COMMITS="$(git -C "${WT}" log --oneline "${BASE_BRANCH}..${BRANCH}")" \
+    || { echo "[zero-diff] git log ${BASE_BRANCH}..${BRANCH} 失败：改动面不可判定，fail-closed 终止" >&2; exit 1; }
+  if [ "${#CHANGED[@]}" -gt 0 ]; then
+    python3 "${REPO}/.factory/guard.py" --files ${CHANGED[@]+"${CHANGED[@]}"}
+  elif [ -n "${COMMITS}" ]; then
+    # 有提交却收不到 diff：diff 收集异常，保持既有 fail-closed 不变量
+    # （旧路径死于 guard exit 2，此处显式退出并说明原因）。
+    echo "[guard] CHANGED 空但 ${BASE_BRANCH}..${BRANCH} 有提交：diff 收集异常，fail-closed 终止" >&2
+    exit 1
+  else
+    # 零改动轮（issue #165 round-4 实证）：bash 3.2 空数组经 ${CHANGED[@]+…}
+    # 展开消失，`--files` 零路径 = 用法错误 → guard fail-closed exit 2 误杀
+    # 全绿链。零改动 = 无周界面可查，跳过 guard。
+    echo "[guard] 零改动轮：无周界面可查，guard 跳过"
+  fi
   # ADR-009 门命令数据化：final_gate_cmd 来自 factory-local.json（fail-closed：
   # factory_lib 加载失败此处即非零终止）；read -ra 拆词为 argv 数组执行。
   GATE_CMD="$(python3 "${REPO}/.factory/factory_lib.py" final-gate)"
@@ -439,12 +524,14 @@ if [ "${DRY}" = 0 ]; then
   fi
   # 证据段：触及的测试套件以 -v 重跑附于末尾——holdout 不许推测，
   # 需要可引用的测试名/参数化用例名（-q 点号无法建立诉求对应关系）
-  for suite in $(python3 "${REPO}/.factory/factory_lib.py" suites ${CHANGED}); do
+  # NUL 分隔消费（PR #116）：套件名可含空格（skills/foo bar/...），for 词拆分
+  # 会拆碎名致证据段静默跳过；suites 产出 NUL → read -d '' 逐条保真
+  while IFS= read -r -d '' suite; do
     [ -d "${WT}/${suite}" ] || continue
     echo "" >> "${DIR}/tests-output.txt"
     echo "── 证据段（verbose）: ${suite}" >> "${DIR}/tests-output.txt"
     (cd "${WT}/${suite}" && python3 -m pytest -o addopts="" -v) >> "${DIR}/tests-output.txt" 2>&1 || true
-  done
+  done < <(python3 "${REPO}/.factory/factory_lib.py" suites ${CHANGED[@]+"${CHANGED[@]}"})
 else
   echo "[dry-run] guard.py --files <changed> + 测试门(final_gate_cmd) → ${DIR}/tests-output.txt（脚本生成）"
   echo "[dry-run] docstring 门（docstring_gate_cmd，未配置则跳过） → ${DIR}/docstring-output.txt"
@@ -471,6 +558,30 @@ PYA
     || { echo "holdout=FAIL，链终止（不建 PR；evidence 已存 chain-history）"; exit 1; }
 fi
 
+# --- 7.5 零改动轮收官：无 diff 即无 PR（issue #165 round-4 实证） ---
+# 纯验证轮的产出是工件与 issue 评论，不是代码。若继续走 §8，push 会把
+# BASE_BRANCH 领先 origin 的提交整段带进 PR diff（如未推的 main 提交），
+# 污染人类评审面。holdout PASS 后零提交 → exit 0 收官：rc=0 不触发
+# trap 清标，accepted/in-progress 留守，派发器按设计跳过滞留
+# in-progress 的 issue（见文件头 S2 注释），验证轮不再被重派。
+if [ "${DRY}" = 0 ] && [ -z "${COMMITS}" ]; then
+  echo "[zero-diff] 本轮零仓内改动（纯验证轮，holdout 已 PASS）：不 push、不建 PR，exit 0 收官。"
+  # 终态可见性（2026-09-15 issue #165 实证）：留守 in-progress 在 GitHub 侧
+  # 无任何痕迹，人类看不见链已收官。终态评论补痕；幂等键防诈尸残窗重发。
+  # 评论失败仅告警——链已 PASS，可见性是透明度而非门。
+  cat > "${DIR}/zero-diff-receipt.md" <<RECEIPT
+零改动验证轮收官：链内全门 + holdout PASS，无代码改动，不建 PR。
+
+issue 保持 \`factory:accepted\` + \`factory:in-progress\` 留守防重派（§7.5）。
+若本 issue 为日回归容器（标题含 [factory-regression]），后续日回归失败时
+滞留态将被自动唤醒重派；其余 issue 的留守请人工裁决处置。
+若本诉求已满足，请人工确认后关闭本 issue。
+RECEIPT
+  issue_comment "${DIR}/zero-diff-receipt.md" \
+    "factory:receipt:issue-${ISSUE}:r${ROUND}-zero-diff" \
+    || echo "  [warn] 终态评论失败（${DIR}/zero-diff-receipt.md 留档），不影响收官" >&2
+  exit 0
+fi
 # --- 8. 开 PR（S1 到此为止：merge 由人类决定，铁律 5） ---
 if [ "${DRY}" = 0 ]; then
   # --no-verify：新分支首推无 @{push}，lefthook {push_files} 模板必然 exit 128；
@@ -481,8 +592,9 @@ if [ "${DRY}" = 0 ]; then
   PR_TITLE="$(git -C "${WT}" log --pretty=%s -1)"
   ${HOST} pr create \
     --head "$BRANCH" --title "$PR_TITLE" \
+    --base "${BASE_BRANCH}" \
+    --body-file <(echo "Closes #${ISSUE}"; echo; echo "工厂链产物见 ${DIR}"; echo; echo "链: triage → prime → plan → implement ↔ review（ralph ≤${RALPH_MAX} 轮）→ guard → holdout") \
     --label "factory:needs-review" \
-    --body-file <(echo "Closes #${ISSUE}"; echo; echo "工厂链产物见 ${DIR}"; echo; echo "链: triage → prime → plan → implement ↔ review（ralph ≤${RALPH_MAX} 轮）→ guard → holdout")
   # PR 落地后 issue 侧转移：accepted → in-review（PR 状态接管 issue，§7）。
   # in-progress 由链属主自清：锁不进 PR 阶段，避免 in-review+in-progress
   # 双标签滞留到 closed（锁单一属主原则，链是 in-progress 生命周期的终点）

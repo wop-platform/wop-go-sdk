@@ -6,9 +6,9 @@
 
 两种门：
 - guard（篡改类）：guard.py --files 单文件，秒级。
-- tests（行为破坏类）：run_tests.sh --no-lock 全量测试门（8 套件 +
-  badcase 双通道；--no-lock 跳过 plugin_lock/md_link_check——它们是
-  blob 锁与链接门，不消费被注入的行为面），单条分钟级，输出带耗时。
+- tests（行为破坏类）：final_gate_cmd 全量测试门（各仓自定；本仓
+  多套件 + badcase 双通道，blob 锁/链接门不消费被注入的行为面故以
+  --no-lock 形参跳过），单条分钟级，输出带耗时。
 - docstring（文档契约类）：factory-local.json docstring_gate_cmd（可选门，
   缺省不启用；未配置时 docstring 缺陷 SKIP，不构成全绿）——删除公开/内部
   符号 docstring → 门应拦截（对外 API 100% + 内部 ≥80%），单条秒级。
@@ -53,7 +53,7 @@ def _final_gate_words(cfg_path: Path | None = None) -> list[str]:
     （如 "uv run pytest"）都正常解析——与 shell 侧 fix-issue/validate-pr
     的 "${GATE_ARGS[@]}" 直执同构（R2-M4 + PR #71 Sourcery #1：bash
     前缀会把 PATH 型首词当脚本文件名，必失败）。fail-closed：配置
-    缺失/缺键/非字符串/含引号/空 → RuntimeError（启动即炸，不产生
+    缺失/缺键/非字符串/含引号/含换行/空 → RuntimeError（启动即炸，不产生
     无效证据）。类型校验与 factory_lib._local_str 同规（PR #71
     Sourcery #2：str() 静默转换会让数字/列表在 py 侧放行而 shell 侧
     拒绝——两消费方行为必须一致）。
@@ -64,6 +64,8 @@ def _final_gate_words(cfg_path: Path | None = None) -> list[str]:
         raw_val = cfg["final_gate_cmd"]
         if not isinstance(raw_val, str):
             raise ValueError("final_gate_cmd 须为非空字符串")
+        if "\n" in raw_val or "\r" in raw_val:
+            raise ValueError("final_gate_cmd 禁含换行（read -r -a 只取首行，shlex 多行拆词，两侧 argv 分歧）")
         raw = raw_val.strip()
         if "'" in raw or '"' in raw:
             raise ValueError("final_gate_cmd 禁含引号（与 bash 侧 read -r -a 拆词一致性，R2-N8）")
@@ -83,12 +85,12 @@ FINAL_GATE = _final_gate_words()
 def _docstring_gate_words(cfg_path: Path | None = None) -> list[str] | None:
     """docstring 门命令（可选键）：factory-local.json docstring_gate_cmd 拆词。
 
-    与 _final_gate_words 同构但为**可选**门：键缺失/空 → None（未启用，
+    与 _final_gate_words 同构但为**可选**门：仅键缺失 → None（未启用，
     链脚本跳过；mutations 中 docstring 缺陷 SKIP——未启用的门无灵敏度
-    可证，不构成全绿）。键存在 → 校验同 final_gate_cmd（非空字符串 +
-    禁引号 + 禁反斜杠，fail-closed：配置损坏即 RuntimeError，禁止静默
-    降级为无门）。阈值（对外 API 100% + 内部 ≥80%）由各仓检查器自定，
-    本处只承载命令词。
+    可证，不构成全绿）。键存在即校验（非空字符串 + 禁引号/反斜杠/
+    换行；键存在但空 = 非法配置，fail-closed RuntimeError，
+    禁止静默降级为无门）。阈值（对外 API 100% + 内部 ≥80%）由各仓
+    检查器自定，本处只承载命令词。
     """
     p = cfg_path or REPO_ROOT / ".factory" / "factory-local.json"
     try:
@@ -98,6 +100,8 @@ def _docstring_gate_words(cfg_path: Path | None = None) -> list[str] | None:
         raw_val = cfg["docstring_gate_cmd"]
         if not isinstance(raw_val, str):
             raise ValueError("docstring_gate_cmd 须为非空字符串")
+        if "\n" in raw_val or "\r" in raw_val:
+            raise ValueError("docstring_gate_cmd 禁含换行（read -r -a 只取首行，shlex 多行拆词，两侧 argv 分歧）")
         raw = raw_val.strip()
         if "'" in raw or '"' in raw:
             raise ValueError("docstring_gate_cmd 禁含引号（与 bash 侧 read -r -a 拆词一致性，R2-N8）")
@@ -118,12 +122,21 @@ DOCSTRING_GATE = _docstring_gate_words()
 GUARD_TIMEOUT = 300
 TESTS_TIMEOUT = 600
 
-def write_stamp(evidence: str = "EVIDENCE-2026-08-24.md") -> str | None:
-    """全绿出口调用：当前周界 blob 写入 stamp（None = 无法绑定，不写）。"""
+def write_stamp(evidence: str | None = None) -> str | None:
+    """全绿出口调用：当前周界 blob 写入 stamp（None = 无法绑定，不写）。
+
+    evidence 指向人工证据留档名；缺省时取 mutations/ 目录最新
+    EVIDENCE-*.md（下游 xx-web-tools 反哺：静态默认文件名会过期——
+    写戳引用不存在的留档 = stamp 说谎）。无留档如实记「无留档文件」。
+    """
     import datetime
     blob = perimeter_blob()
     if not blob:
         return None
+    if evidence is None:
+        ev_dir = STAMP.parent
+        cands = sorted(ev_dir.glob("EVIDENCE-*.md")) if ev_dir.is_dir() else []
+        evidence = cands[-1].name if cands else "（无留档文件）"
     STAMP.write_text(json.dumps({
         "perimeter_blob": blob,
         "evidence": evidence,
@@ -231,7 +244,7 @@ def tracked_and_dirty(rel: str) -> bool:
 def run_gate(gate: str, target: str) -> int | None:
     """跑门返回退出码；超时返回 None（无效运行，见 judge）。
 
-    超时杀**整个进程组**（start_new_session + killpg）：run_tests.sh 会
+    超时杀**整个进程组**（start_new_session + killpg）：全量门会
     派生 pytest 孙进程，只杀门直子会留下孤儿继续读注入中的 target
     ——finally 还原字节与孤儿运行并发，污染后续缺陷轮（PR #33 审查）。
     """
@@ -283,8 +296,7 @@ def run_gate(gate: str, target: str) -> int | None:
         print(f"    门超时（>{timeout}s）：已杀进程组，无效运行")
         return None
     elapsed = time.monotonic() - start
-    tail = (out + err).strip().splitlines()
-    if tail:
+    if tail := (out + err).strip().splitlines():
         print(f"    gate 输出末行: {tail[-1][:120]}")
     return proc.returncode
 
@@ -326,6 +338,13 @@ def main() -> int:
     stamp_stale_banner()
     if args.only:
         wanted = {x.strip() for x in args.only.split(",") if x.strip()}
+        # 下游 xx-web-tools 反哺：未知 id 过滤结果为空仍以 0 退出写戳
+        # = 配置错误伪装成全量验证。缺失即拒绝（exit 2，对齐 guard 用法语义）。
+        all_ids = {d.id for d in defects}
+        if missing := wanted - all_ids:
+            print(f"配置错误: --only 含未知缺陷 id: {sorted(missing)}"
+                  f"（已知: {sorted(all_ids)}）", file=sys.stderr)
+            return 2
         defects = [d for d in defects if d.id in wanted]
 
     outcomes: list[Outcome] = []
@@ -333,7 +352,17 @@ def main() -> int:
 
     for d in defects:
         print(f"[{d.id}] {d.description}（gate={d.gate}）")
-        target = REPO_ROOT / d.target
+        # 下游 xx-web-tools 反哺：d.target 绝对路径会重置 REPO_ROOT 拼接
+        # （Path / 语义），`..` 可越仓——--defects 载外部 JSON 时指向仓外
+        # 文件注入+写回（进程非正常终止 = 注入残留落仓外）。resolve 后
+        # 必须仍在 REPO_ROOT 内。
+        target = (REPO_ROOT / d.target).resolve()
+        try:
+            target.relative_to(REPO_ROOT)
+        except ValueError:
+            outcomes.append(Outcome(d, "FAIL-config", f"target 越出仓库根: {d.target}"))
+            print("    FAIL-config: target 越出仓库根")
+            continue
         if not target.is_file():
             outcomes.append(Outcome(d, "FAIL-config", f"target 不存在: {d.target}"))
             print("    FAIL-config: target 不存在")
@@ -362,12 +391,11 @@ def main() -> int:
             if original is not None:
                 target.write_text(original, encoding="utf-8")
 
-    # 还原完整性校验：凡注入过的文件，当前字节必须与备份一致
-    residual = []
-    for target, original in originals.items():
-        if target.read_text(encoding="utf-8") != original:
-            residual.append(str(target.relative_to(REPO_ROOT)))
-    if residual:
+    if residual := [
+        str(target.relative_to(REPO_ROOT))
+        for target, original in originals.items()
+        if target.read_text(encoding="utf-8") != original
+    ]:
         print(f"\nFATAL: 以下文件还原失败（请人工核对该文件是否已恢复原状）: {residual}",
               file=sys.stderr)
         return 3
@@ -403,8 +431,7 @@ def main() -> int:
         print(f"  结论: 覆盖不完整（SKIP: {ids}），本次通过不构成 auto-merge 依据（铁律 5）")
         return 4
     print("  结论: 门灵敏度冒烟通过（auto-merge 的必要非充分条件）")
-    blob = write_stamp()
-    if blob:
+    if blob := write_stamp():
         print(f"  周界指纹已绑定: {blob[:12]}（evidence-stamp.json）")
     return 0
 
